@@ -1,9 +1,10 @@
 # Allow-list: the build context holds only what the Dockerfile copies.
 # Everything else (.git, .venv, tests, docs, .claude, .github, infra, charts, monitoring,
 # .env files, caches) never reaches the Docker daemon, so it cannot leak into a layer.
+# Only Python source is allowed under app/, so a stray app/.env or key file can't be copied in.
 *
 
-!app/
+!app/**/*.py
 !pyproject.toml
 !uv.lock
 
