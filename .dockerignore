@@ -1,0 +1,12 @@
+# Allow-list: the build context holds only what the Dockerfile copies.
+# Everything else (.git, .venv, tests, docs, .claude, .github, infra, charts, monitoring,
+# .env files, caches) never reaches the Docker daemon, so it cannot leak into a layer.
+*
+
+!app/
+!pyproject.toml
+!uv.lock
+
+# Re-exclude local bytecode inside the allowed paths.
+**/__pycache__
+**/*.py[cod]
