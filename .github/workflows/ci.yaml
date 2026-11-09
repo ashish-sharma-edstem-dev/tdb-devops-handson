@@ -141,3 +141,118 @@ jobs:
             -o "$RUNNER_TEMP/requirements.txt"
           uvx "pip-audit==${PIP_AUDIT_VERSION}" -r "$RUNNER_TEMP/requirements.txt" \
             --require-hashes --disable-pip --strict --progress-spinner off
+
+  image:
+    name: Image build, scan, publish
+    # Only an image whose code passed every check is built; on main, only that image is published.
+    needs: [lint-test, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload the Trivy SARIF to code scanning
+    env:
+      SCAN_REF: tdb-bookings:ci-scan # local tag of the loaded image that Trivy scans
+      TRIVY_VERSION: "0.76.1"
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0 # Linux-64bit.tar.gz
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name
+        id: image
+        # Registry paths must be lowercase; github.repository keeps the owner's case.
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPO,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata (tags and OCI labels)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # sha-<full 40-char commit SHA>: immutable, one per commit. main: moving pointer to the latest.
+          tags: |
+            type=sha,format=long
+            type=raw,value=main,enable={{is_default_branch}}
+          # Adds revision (commit SHA), source (repo URL), created, version, url, licenses.
+          labels: |
+            org.opencontainers.image.title=tdb-bookings
+            org.opencontainers.image.description=Minimal bookings web service (FastAPI)
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (load locally for scanning)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.SCAN_REF }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          # Layer cache in the GitHub Actions cache: unchanged dependency layers are not rebuilt.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Attestations cannot be loaded into the local image store; the publish build adds them.
+          provenance: false
+          sbom: false
+
+      - name: Install Trivy (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
+          echo "TRIVY_DB_DAY=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Cache Trivy vulnerability DB (refreshed daily)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: trivy-db-${{ env.TRIVY_DB_DAY }}
+          restore-keys: trivy-db-
+
+      - name: Trivy gate (any CRITICAL fails the job and blocks publishing)
+        # Unfixed CRITICALs count too (--ignore-unfixed is deliberately not set): a critical with no
+        # patch is still a critical in production. Exceptions need a reviewed .trivyignore entry.
+        run: |
+          trivy image --image-src docker --scanners vuln --no-progress \
+            --severity CRITICAL --exit-code 1 --format table "$SCAN_REF"
+
+      - name: Trivy report (CRITICAL, HIGH, MEDIUM as SARIF; does not block)
+        id: trivy-report
+        # Runs even when the gate failed, so the findings that blocked the build show up in code scanning.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          trivy image --image-src docker --scanners vuln --no-progress --skip-db-update \
+            --severity CRITICAL,HIGH,MEDIUM --exit-code 0 \
+            --format sarif --output "$RUNNER_TEMP/trivy.sarif" "$SCAN_REF"
+
+      - name: Upload Trivy SARIF to code scanning
+        # Fork PRs get a read-only token, so security-events: write is not available there.
+        if: >-
+          ${{ !cancelled() && steps.trivy-report.outcome == 'success' &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/trivy.sarif
+          category: trivy-image
