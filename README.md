@@ -113,7 +113,7 @@ HPA, PodDisruptionBudget, NetworkPolicy, optional Ingress, a `helm test`, and a 
 | | dev (`values-dev.yaml`) | prod (`values-prod.yaml`) |
 |---|---|---|
 | Replicas | 1 | HPA 3 → 10 (CPU 70%, memory 80%) |
-| Disruptions | none | PDB `minAvailable: 2`, spread across zones and nodes |
+| Disruptions | none | PDB `maxUnavailable: 1`, spread across zones and nodes |
 | Image | `main` tag | must be pinned: `image.digest` or `image.tag=sha-<commit>` (schema enforces) |
 
 - **No downtime on release:** `maxUnavailable: 0`, readiness gate on `/health`, `preStop` sleep so the endpoint is
@@ -131,4 +131,4 @@ HPA, PodDisruptionBudget, NetworkPolicy, optional Ingress, a `helm test`, and a 
 |---|---|
 | Install, `helm test` | 3 pods, one per zone; test pod `Succeeded` |
 | Rolling upgrade (config change → new ReplicaSet) | `ok=5343 errors=0` |
-| Drain two of three workers at once | PDB blocked evictions below 2 available ("would violate the pod's disruption budget"), pods moved one at a time: `ok=1616 errors=0` |
+| Drain two of three workers at once | PDB allowed one eviction at a time ("would violate the pod's disruption budget"), pods moved one at a time: `ok=1616 errors=0` |

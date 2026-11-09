@@ -21,10 +21,10 @@ of safe defaults, and a `values.schema.json` that rejects bad input at `helm lin
   `sha-<commit>` tag) and the schema rejects a release without one.
 - **Zero-downtime rollout:** `maxUnavailable: 0`, startup + readiness probes on the dependency-free `/health`,
   `minReadySeconds`, `preStop` sleep before SIGTERM, grace period checked to be longer than the sleep.
-- **Availability:** HPA 3–10 (CPU + memory), PDB `minAvailable: 2` with `unhealthyPodEvictionPolicy: AlwaysAllow`,
+- **Availability:** HPA 3–10 (CPU + memory), PDB `maxUnavailable: 1` with `unhealthyPodEvictionPolicy: AlwaysAllow`,
   topology spread hard across nodes and soft across zones with `nodeTaintsPolicy: Honor`.
 - **Cross-field rules in templates** (`fail`) where JSON Schema draft-07 cannot express them: grace period > preStop,
-  HPA min ≤ max, PDB `minAvailable` < minimum replicas.
+  HPA min ≤ max, PDB `maxUnavailable` < minimum replicas; prod requires a digest or `sha-<commit>` tag.
 - **CI** (`helm.yaml`): `helm lint --strict`, `helm template` and `kubeconform -strict` against Kubernetes 1.33 for
   both environments, plus assertions on the rendered prod output (no Secret, secretKeyRef only, HPA floor 3, PDB 2,
   `maxUnavailable: 0`, spread) and a negative test that prod without an image fails lint.

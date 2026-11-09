@@ -8,7 +8,7 @@ HPA, a PodDisruptionBudget, a NetworkPolicy and an optional Ingress. Kubernetes 
 | `values.yaml` | Documented, safe defaults (1 replica, nothing optional enabled, locked-down pod). |
 | `values.schema.json` | JSON Schema for every value. Wrong types, typos and unsafe settings fail `helm lint` / `helm install`. |
 | `values-dev.yaml` | Dev: 1 small replica, no HPA / PDB / NetworkPolicy, follows the `main` image tag. |
-| `values-prod.yaml` | Prod: HPA 3–10, PDB `minAvailable: 2`, spread across zones and nodes, NetworkPolicy, DB Secret. |
+| `values-prod.yaml` | Prod: HPA 3–10, PDB `maxUnavailable: 1`, spread across zones and nodes, NetworkPolicy, DB Secret. |
 | `ci/kind-config.yaml` | Local 3-zone kind cluster for the steps at the end of this file. |
 
 ## Install
@@ -123,9 +123,9 @@ ships `/bin/sleep`, so the exec form works on every supported version and with t
 - **Load:** `autoscaling/v2` HPA, 3–10 replicas in prod, on CPU (70 % of the request) and memory (80 %). Scales up
   fast (double or +2 pods every 30 s) and down slowly (5-minute stabilisation, at most 25 % per minute) to avoid
   flapping. Requests are set, so utilisation has a meaning. The HPA needs metrics-server in the cluster.
-- **Drain:** PodDisruptionBudget `minAvailable: 2`: `kubectl drain` and node upgrades evict one pod at a time and wait
+- **Drain:** PodDisruptionBudget `maxUnavailable: 1`: `kubectl drain` and node upgrades evict one pod at a time and wait
   until its replacement is Ready. `unhealthyPodEvictionPolicy: AlwaysAllow` lets a crash-looping pod be evicted so it
-  never blocks a drain. The chart refuses a PDB that would allow zero evictions (`minAvailable` ≥ minimum replicas).
+  never blocks a drain. The chart refuses a PDB that could take every pod (`maxUnavailable` ≥ minimum replicas); the schema refuses 0, which would block every drain.
 - **Placement:** `topologySpreadConstraints`: across `kubernetes.io/hostname` hard (`DoNotSchedule`), across
   `topology.kubernetes.io/zone` soft (`ScheduleAnyway`, so a zone short of capacity never blocks scheduling).
   `nodeTaintsPolicy: Honor` keeps cordoned nodes (the one being drained) and the tainted control plane out of the
@@ -179,7 +179,7 @@ cluster DNS and PostgreSQL 5432 inside the VPC. `10.0.0.0/16` in `values-prod.ya
 | `autoscaling.targetCPUUtilizationPercentage` | `70` | % of the CPU request. |
 | `autoscaling.targetMemoryUtilizationPercentage` | `0` (off) | Prod: `80`. |
 | `autoscaling.behavior` | fast up, slow down | HPA `behavior` block. |
-| `podDisruptionBudget.enabled` / `.minAvailable` | `false` / `1` | Prod: `true` / `2`. |
+| `podDisruptionBudget.enabled` / `.maxUnavailable` | `false` / `1` | Prod: `true` / `1`. |
 | `podDisruptionBudget.unhealthyPodEvictionPolicy` | `AlwaysAllow` | Unready pods never block a drain. |
 | `topologySpread.enabled` / `.constraints` | `false` / zone + hostname | Selector is added by the chart. |
 | `podSecurityContext` / `securityContext` | restricted | Schema forbids `runAsNonRoot: false`, privilege escalation, `privileged`. |
@@ -217,7 +217,7 @@ kubectl -n tdb-prod create secret generic tdb-bookings-db \
 # 4. Install with the prod values and the local image.
 helm upgrade --install tdb-bookings charts/tdb-bookings -n tdb-prod \
   -f charts/tdb-bookings/values-prod.yaml \
-  --set image.repository=tdb-bookings --set image.tag=local \
+  --set image.repository=tdb-bookings --set image.tag=local --set image.allowMutableTag=true \
   --wait --timeout 5m
 kubectl -n tdb-prod rollout status deployment/tdb-bookings
 # The HPA (not the Deployment) sets the count to 3, one sync after install:
@@ -274,7 +274,7 @@ EOF
 ```bash
 helm upgrade tdb-bookings charts/tdb-bookings -n tdb-prod \
   -f charts/tdb-bookings/values-prod.yaml \
-  --set image.repository=tdb-bookings --set image.tag=local \
+  --set image.repository=tdb-bookings --set image.tag=local --set image.allowMutableTag=true \
   --set config.extraEnv.RELEASE_MARKER=v2 --wait
 kubectl -n tdb-prod rollout status deployment/tdb-bookings
 ```
@@ -292,6 +292,8 @@ kubectl drain tdb-worker2 --ignore-daemonsets --delete-emptydir-data --pod-selec
 wait
 kubectl -n tdb-prod get pods -o wide            # all 3 Running on tdb-worker3; PDB never below 2 available
 kubectl uncordon tdb-worker tdb-worker2
+# Kubernetes does not move pods back after uncordon; restart to re-spread them across zones.
+kubectl -n tdb-prod rollout restart deployment/tdb-bookings
 ```
 
 **Result:** `kubectl -n tdb-prod logs -f load` ends with `ok=<n> errors=0` once the 300 s are up.

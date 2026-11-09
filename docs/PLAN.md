@@ -95,7 +95,7 @@ runs. Dependabot keeps actions, Python deps and the base image digest current.
 | dev / prod | `values-dev.yaml` (1 replica, no HPA, small resources); `values-prod.yaml` (min 3 replicas, HPA 3→10). |
 | Zero-downtime release | RollingUpdate `maxUnavailable: 0, maxSurge: 25%`; readiness probe on `/health`; `preStop` sleep + `terminationGracePeriodSeconds` so endpoints drain before SIGTERM; config checksum annotation rolls pods on config change. |
 | Scales with load | `autoscaling/v2` HPA on CPU (and memory) with requests set. |
-| Survives node drain | PodDisruptionBudget `minAvailable: 2` in prod; `topologySpreadConstraints` across zones and nodes, so one drained node or zone never takes all replicas. |
+| Survives node drain | PodDisruptionBudget `maxUnavailable: 1` in prod (one pod at a time at any replica count); `topologySpreadConstraints` across zones and nodes, so one drained node or zone never takes all replicas. |
 | Config vs secrets | Non-secret config in a ConfigMap. `DATABASE_URL` read via `secretKeyRef` from an **existing** Secret (`secret.existingSecret`), created out of band (External Secrets Operator syncing AWS Secrets Manager in real envs; `kubectl create secret` locally). The chart never renders a Secret value. |
 | Pod security | `runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL capabilities, `seccompProfile: RuntimeDefault`, no privilege escalation. |
 | Input validation | `values.schema.json`: bad values fail at `helm lint` / `install`, not at runtime. |
