@@ -2,6 +2,8 @@
 
 IMAGE ?= tdb-bookings:local
 PORT ?= 8080
+# Never pass an empty revision: an empty build arg would override the Dockerfile's "unknown".
+VCS_REF ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 
 install:
 	uv sync --locked
@@ -22,7 +24,7 @@ typecheck:
 check: lint typecheck test
 
 docker-build:
-	docker build --build-arg VCS_REF=$$(git rev-parse HEAD) \
+	docker build --build-arg VCS_REF=$(VCS_REF) \
 		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) -t $(IMAGE) .
 
 # Same hardening as production: read-only root filesystem, no capabilities, no privilege gain.
