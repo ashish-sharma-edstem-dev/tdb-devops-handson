@@ -3,6 +3,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "tdb-bookings.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "tdb-bookings.labels" . | nindent 4 }}
 data:
