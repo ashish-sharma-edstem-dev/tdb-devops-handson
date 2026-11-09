@@ -143,10 +143,11 @@ Resources: CPU and memory requests, a memory limit, **no CPU limit** by default.
 which shows up as tail latency even when the node has idle CPU; the request already guarantees the pod its share and
 is what the HPA measures against. Set `resources.limits.cpu` if a namespace policy requires one.
 
-NetworkPolicy (prod): ingress only to the `http` port, only from the VPC CIDR (ALB with IP targets), the `monitoring`
-namespace (Prometheus) and pods labelled `tdb-bookings/client: <fullname>` (the `helm test` pod). Egress only to
-cluster DNS and PostgreSQL 5432 inside the VPC. `10.0.0.0/16` in `values-prod.yaml` must equal the VPC CIDR in
-`infra/terraform`.
+NetworkPolicy (prod): ingress only to the `http` port, only from the prod public subnets `10.0.0.0/22` (the ALB, IP
+targets), the `monitoring` namespace (Prometheus) and pods labelled `tdb-bookings/client: <fullname>` (the `helm test`
+pod). Egress only to cluster DNS and PostgreSQL 5432 in the prod DB subnets `10.0.20.0/22`. Not the VPC CIDR: with the
+VPC CNI every pod has a VPC IP, so `10.0.0.0/16` would admit every pod in the cluster. Both ranges in
+`values-prod.yaml` must cover the public and DB subnet CIDRs in `infra/terraform/envs/prod`.
 
 ## Values
 

@@ -46,4 +46,6 @@ of safe defaults, and a `values.schema.json` that rejects bad input at `helm lin
 - Deployers must create the DB Secret before installing prod values (pods stay in `CreateContainerConfigError`
   otherwise; NOTES.txt says so).
 - With the HPA owning `replicas`, a brand-new Deployment starts at 1 pod for one HPA sync (~15 s).
-- The prod NetworkPolicy uses the VPC CIDR (`10.0.0.0/16`), which must stay equal to the Terraform VPC CIDR.
+- The prod NetworkPolicy admits ingress only from the prod public subnets (`10.0.0.0/22`, the ALB) and allows egress
+  5432 only to the prod DB subnets (`10.0.20.0/22`), not the whole VPC (`10.0.0.0/16`): with the VPC CNI every pod has
+  a VPC IP, so the VPC CIDR would admit every pod. Both ranges must keep covering the Terraform subnet CIDRs.
