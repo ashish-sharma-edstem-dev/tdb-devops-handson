@@ -238,12 +238,15 @@ tests:
               description: "Prometheus has had no healthy scrape target or no request metrics for job tdb-bookings for 10 minutes. Either the service is down or monitoring is broken; the error-budget alerts cannot fire until this is fixed."
               runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
 
-  # (e2) The target is up but exports no request histogram (e.g. metric renamed by a release).
-  - name: metrics absent pages when request metrics disappear
+  # (e2) The target is up but exports no booking request series (e.g. metric renamed by a release).
+  # /health requests are still recorded: they must not satisfy the absence check.
+  - name: metrics absent pages when booking request metrics disappear
     interval: 1m
     input_series:
       - series: 'up{job="tdb-bookings", instance="app:8080"}'
         values: '1x20'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/health", status_class="2xx"}'
+        values: '0+10x20'
     alert_rule_test:
       - eval_time: 11m
         alertname: BookingsMetricsAbsent
@@ -279,3 +282,88 @@ tests:
               summary: No metrics from tdb-bookings, so the booking SLO is not being monitored
               description: "Prometheus has had no healthy scrape target or no request metrics for job tdb-bookings for 10 minutes. Either the service is down or monitoring is broken; the error-budget alerts cannot fire until this is fixed."
               runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
+
+  # (f) Every request is a 5xx (e.g. a fresh deploy that fails everything): no non-5xx bucket series
+  # exist at all. The zero-filled numerator makes the error ratio 100%, so the page still fires.
+  - name: fast burn pages when only 5xx series exist
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+100x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+100x60'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are burning the monthly error budget fast
+              description: "100% of booking requests failed or took longer than 1 s (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+
+  # (g) Fresh deploy, nobody has called /bookings yet: the app pre-creates the booking series at 0 and
+  # only /health is hit. Neither the absence alert nor the no-traffic alert may fire.
+  - name: idle fresh deploy raises no alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x180'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0x180'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0x180'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/health", status_class="2xx"}'
+        values: '0+10x180'
+    alert_rule_test:
+      - eval_time: 180m
+        alertname: BookingsMetricsAbsent
+        exp_alerts: []
+      - eval_time: 180m
+        alertname: BookingsNoTraffic
+        exp_alerts: []
+      - eval_time: 180m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+
+  # (h) 1h of healthy booking traffic, then booking counters go flat while /health keeps rising and the
+  # target stays up (e.g. ingress broken). Rate over 15m hits 0 at ~76m, `for: 30m` -> fires by ~106m.
+  - name: no-traffic tickets when booking requests stop
+    interval: 1m
+    input_series:
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x120'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+100x60 6000x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+100x60 6000x60'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/health", status_class="2xx"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: BookingsNoTraffic
+        exp_alerts: []
+      - eval_time: 95m
+        alertname: BookingsNoTraffic
+        exp_alerts: []
+      - eval_time: 110m
+        alertname: BookingsNoTraffic
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: ticket
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: No booking requests are reaching tdb-bookings
+              description: "tdb-bookings has received no booking requests for at least 45 minutes, although it had traffic in the last day. The error-budget alerts cannot see an outage that stops all traffic, so check whether clients can still reach the service."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsNoTraffic.md
+      - eval_time: 110m
+        alertname: BookingsMetricsAbsent
+        exp_alerts: []

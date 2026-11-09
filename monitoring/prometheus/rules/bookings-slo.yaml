@@ -11,7 +11,13 @@
 # survives pod churn (no instance/pod label). One Prometheus per environment is assumed; if several
 # environments shared one Prometheus, add their distinguishing label (e.g. namespace) to `by (...)`.
 #
-# No traffic => 0/0 => NaN => no burn alert fires. BookingsMetricsAbsent covers that case.
+# The good-request numerator is zero-filled (`or on (job) 0 * total`): if every request is a 5xx (e.g. a
+# fresh deploy that fails everything) no non-5xx bucket series exist, the numerator would be empty and
+# the ratio would vanish, silencing the burn alerts during a total outage. With the fill it is 1 (100%).
+# No booking traffic => 0/0 => NaN => no burn alert fires. The request series do not disappear in that
+# case (counters persist, and /health traffic keeps the target scraped), so BookingsMetricsAbsent does
+# NOT cover it; BookingsNoTraffic does. BookingsMetricsAbsent covers a missing target or missing
+# booking series.
 # The 30d window needs Prometheus retention of at least 30 days (compose.yaml sets 31d).
 #
 # Alerts follow the multi-window, multi-burn-rate pattern from the Google SRE Workbook, chapter 5:
@@ -28,7 +34,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate5m
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[5m]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[5m]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
           )
@@ -36,7 +46,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate30m
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30m]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30m]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30m]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30m]))
           )
@@ -44,7 +58,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate1h
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1h]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1h]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1h]))
           )
@@ -52,7 +70,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate2h
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[2h]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[2h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[2h]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[2h]))
           )
@@ -60,7 +82,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate6h
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[6h]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[6h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[6h]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[6h]))
           )
@@ -68,7 +94,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate1d
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1d]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1d]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1d]))
           )
@@ -76,7 +106,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate3d
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[3d]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[3d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[3d]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[3d]))
           )
@@ -84,7 +118,11 @@ groups:
       - record: slo:bookings_request_errors:ratio_rate30d
         expr: |
           1 - (
-            sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30d]))
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30d]))
+            )
             /
             sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30d]))
           )
@@ -174,12 +212,15 @@ groups:
 
       - alert: BookingsMetricsAbsent
         # Without data every ratio above is empty and no burn alert can fire, so silence must page.
+        # Only booking series count: /health traffic alone must not satisfy it. The app pre-creates
+        # the GET /bookings 2xx and 5xx children at startup, so an idle but healthy fresh deploy
+        # exports them (at 0) and does not trip this alert.
         # absent() of a comparison carries no labels, so job is added back: both branches then
         # produce the same series and `or` collapses them into one alert.
         expr: |
           label_replace(absent(up{job="tdb-bookings"} == 1), "job", "tdb-bookings", "", "")
           or
-          absent(http_request_duration_seconds_count{job="tdb-bookings"})
+          absent(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"})
         for: 10m
         labels:
           severity: page
@@ -192,3 +233,27 @@ groups:
             tdb-bookings for 10 minutes. Either the service is down or monitoring is broken;
             the error-budget alerts cannot fire until this is fixed.
           runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
+
+      - alert: BookingsNoTraffic
+        # Booking traffic stopped although the service had some in the last day. The SLI is then
+        # 0/0 = NaN, so no burn alert can fire and the series still exist, so BookingsMetricsAbsent
+        # stays quiet too. Typical causes: ingress/DNS/routing broken upstream of the pods.
+        # Severity ticket, not page: with no traffic baseline a quiet hour (night, weekend) looks the
+        # same as a routing outage, and paging on it would be noisy. The "had traffic in the last day"
+        # guard keeps an idle fresh deploy (booking series pre-created at 0) from firing at all.
+        expr: |
+          sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[15m])) == 0
+          and on (job)
+          max_over_time(slo:bookings_requests:rate1h[1d]) > 0
+        for: 30m
+        labels:
+          severity: ticket
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: No booking requests are reaching tdb-bookings
+          description: >-
+            tdb-bookings has received no booking requests for at least 45 minutes, although it had
+            traffic in the last day. The error-budget alerts cannot see an outage that stops all
+            traffic, so check whether clients can still reach the service.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsNoTraffic.md
