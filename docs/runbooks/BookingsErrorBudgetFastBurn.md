@@ -195,8 +195,17 @@ Work top-down; stop at the first branch that matches.
    - OOMKilled → the memory limit is too low for current load or there is a leak. Roll back if it started with a
      release; otherwise raise `resources.limits.memory` through a values change and a normal release.
    - Image pull errors → registry or tag problem; roll back to the last revision that pulled.
-   - Only pods on one node or one zone are bad → cordon that node (`kubectl cordon <node>`) so pods reschedule;
-     replicas are spread across zones, so the rest keep serving.
+   - Only pods on one node or one zone are bad → move them off it. `cordon` alone only stops *new* pods landing
+     there; the bad pods keep running. Drain the service's pods, which the PDB (`maxUnavailable: 1`) evicts one at a
+     time while replacements become Ready elsewhere:
+     ```bash
+     kubectl cordon <node>
+     kubectl drain <node> --ignore-daemonsets --delete-emptydir-data \
+       --pod-selector app.kubernetes.io/name=tdb-bookings
+     kubectl -n "$NS" rollout status deployment/tdb-bookings
+     kubectl -n "$NS" get pods -l app.kubernetes.io/name=tdb-bookings -o wide   # none left on <node>
+     ```
+     Replicas are spread across zones, so the rest keep serving meanwhile. Uncordon once the node is fixed.
 
 3. **Errors are low but requests are slow** (step 1 says latency).
    - CPU near the limit and the HPA at `maxReplicas` → the service is under-scaled for the traffic. Raise
