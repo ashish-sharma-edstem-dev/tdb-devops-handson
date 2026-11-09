@@ -1,0 +1,141 @@
+name: terraform
+
+# Static checks only. No job has AWS credentials, and none runs plan/apply against a real account.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TF_VERSION: "1.11.0" # keep in step with required_version (>= 1.10) and the version the lock files were made with
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TFLINT_VERSION: "v0.65.0"
+  CHECKOV_VERSION: "3.4.3"
+
+defaults:
+  run:
+    working-directory: infra/terraform
+
+jobs:
+  fmt:
+    name: terraform fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+  validate:
+    name: validate + test (${{ matrix.root }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        root: [bootstrap, envs/dev, envs/prod]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # -backend=false: no state, no credentials. -lockfile=readonly: fail if the committed lock file does not
+      # already cover linux_amd64, instead of silently resolving a different provider build.
+      - name: terraform init
+        run: terraform -chdir="${{ matrix.root }}" init -backend=false -lockfile=readonly
+
+      - name: terraform validate
+        run: terraform -chdir="${{ matrix.root }}" validate -no-color
+
+      # Plan-time tests against a mocked AWS provider (tests/mocks): prove 3 AZs / NAT per AZ / Multi-AZ in prod,
+      # no internet route to the DB tier, DB ingress from sg-app only. No AWS calls.
+      - name: terraform test
+        if: hashFiles(format('infra/terraform/{0}/tests/*.tftest.hcl', matrix.root)) != ''
+        run: terraform -chdir="${{ matrix.root }}" test -no-color
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+          # SHA-256 of tflint_linux_amd64.zip from the v0.65.0 release checksums.txt: a re-tagged binary fails here.
+          checksums: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
+          cache: true
+          tflint_config_path: infra/terraform/.tflint.hcl
+
+      # The token only raises the GitHub API rate limit for downloading the pinned AWS ruleset.
+      - name: tflint --init
+        run: tflint --init --config "$PWD/.tflint.hcl"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # --config must be absolute: in --recursive mode a relative path is looked up in each module directory.
+      - name: tflint
+        run: tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+
+  checkov:
+    name: checkov
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install checkov
+        run: python -m pip install --disable-pip-version-check "checkov==${CHECKOV_VERSION}"
+
+      # Not --soft-fail: any failed check fails the job. Intentional exceptions are inline
+      # `#checkov:skip=<id>:<reason>` next to the resource, so each one is reviewed with the code.
+      - name: checkov
+        run: >-
+          checkov -d . --framework terraform --quiet --compact
+          -o cli -o sarif --output-file-path "console,${GITHUB_WORKSPACE}/checkov.sarif"
+
+      # Reporting only: a code-scanning outage, or a fork PR's read-only token, must not fail the scan job.
+      - name: Upload SARIF
+        if: >-
+          always() && hashFiles('checkov.sarif') != '' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: checkov.sarif
+          category: checkov-terraform
