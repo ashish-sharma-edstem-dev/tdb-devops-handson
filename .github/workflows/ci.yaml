@@ -1,7 +1,8 @@
 # CI for tdb-bookings. See docs/adr/0002-ci-pipeline.md for the design.
 #
 # Pull request : lint, type-check, test, secret/dependency/Dockerfile scans, image build + Trivy scan.
-# Push to main : all of the above, then publish the scanned image to GHCR with provenance.
+# Push to main : all of the above, then the publish job pushes by digest, re-scans that exact digest,
+#                tags it sha-<commit> (and main if still the head) and attests it.
 #
 # Supply chain: every third-party action is pinned to a full commit SHA (tag in the comment for
 # humans and Dependabot); downloaded tools are pinned by version and verified against a
@@ -146,19 +147,16 @@ jobs:
             --require-hashes --disable-pip --strict --progress-spinner off
 
   image:
-    name: Image build, scan, publish
-    # Only an image whose code passed every check is built; on main, only that image is published.
+    name: Image build and scan
+    # Runs on every PR and every push. Holds no token that can write packages or sign anything:
+    # PR code (tests, Dockerfile RUN steps, scanners) never runs next to publishing credentials.
     needs: [lint-test, security]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
       security-events: write # upload the Trivy SARIF to code scanning
-      packages: write # push to GHCR (the push steps only run on main)
-      id-token: write # OIDC token for the Sigstore signing certificate of the attestation
-      attestations: write # store the build provenance attestation
     env:
-      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       SCAN_REF: tdb-bookings:ci-scan # local tag of the loaded image that Trivy scans
       TRIVY_VERSION: "0.76.1"
       TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0 # Linux-64bit.tar.gz
@@ -173,29 +171,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Image name
-        id: image
-        # Registry paths must be lowercase; github.repository keeps the owner's case.
-        env:
-          REPO: ${{ github.repository }}
-        run: echo "name=ghcr.io/${REPO,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Image metadata (tags and OCI labels)
+      - name: Image metadata (OCI labels)
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        env:
-          # Provenance/SBOM turn the push into an image index; GHCR reads the description from there.
-          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
-          images: ${{ steps.image.outputs.name }}
-          # sha-<full 40-char commit SHA>: immutable, one per commit. main: moving pointer to the latest.
-          tags: |
-            type=sha,format=long
-            type=raw,value=main,enable={{is_default_branch}}
-          # Adds revision (commit SHA), source (repo URL), created, version, url, licenses.
+          images: tdb-bookings
+          # Adds revision (commit SHA), source (repo URL), created, url; these override the defaults.
           labels: |
             org.opencontainers.image.title=tdb-bookings
             org.opencontainers.image.description=Minimal bookings web service (FastAPI)
+            org.opencontainers.image.licenses=NOASSERTION
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -216,7 +201,10 @@ jobs:
           # Layer cache in the GitHub Actions cache: unchanged dependency layers are not rebuilt.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Attestations cannot be loaded into the local image store; the publish build adds them.
+          # The runtime stage applies an unpinned Debian security upgrade (Dockerfile); never reuse
+          # it from cache, or a newer fix would never reach the image. It costs a few seconds.
+          no-cache-filters: runtime
+          # Attestations cannot be loaded into the local image store; the publish job adds them.
           provenance: false
           sbom: false
 
@@ -233,18 +221,16 @@ jobs:
           echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
           echo "TRIVY_DB_DAY=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
 
-      - name: Cache Trivy vulnerability DB (refreshed daily; PR runs only)
-        # The DB decides whether the gate passes, so a publishing run always downloads a fresh one
-        # instead of trusting a cached copy (no cache-poisoning path into the publish gate). zizmor
-        # cannot see this `if:`, hence the inline ignore below.
-        if: ${{ env.PUBLISH != 'true' }}
+      - name: Cache Trivy vulnerability DB (one per day)
+        # Speeds up this job only. The publish job never uses this cache: it downloads a fresh DB
+        # for its gate, so a poisoned cache cannot wave an image through to GHCR.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # zizmor: ignore[cache-poisoning]
         with:
           path: ${{ env.TRIVY_CACHE_DIR }}
           key: trivy-db-${{ env.TRIVY_DB_DAY }}
           restore-keys: trivy-db-
 
-      - name: Trivy gate (any CRITICAL fails the job and blocks publishing)
+      - name: Trivy gate (any CRITICAL fails the job; publishing needs this job)
         id: trivy-gate
         # Unfixed CRITICALs count too (--ignore-unfixed is deliberately not set): a critical with no
         # patch is still a critical in production. Exceptions need a reviewed .trivyignore entry.
@@ -256,59 +242,187 @@ jobs:
         id: trivy-report
         # Runs even when the gate failed, so the findings that blocked the build show up in code scanning.
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
         run: |
           trivy image --image-src docker --scanners vuln --no-progress --skip-db-update \
             --severity CRITICAL,HIGH,MEDIUM --exit-code 0 \
             --format sarif --output "$RUNNER_TEMP/trivy.sarif" "$SCAN_REF"
 
-      - name: Upload Trivy SARIF to code scanning
+      - name: Upload Trivy SARIF to code scanning (does not block)
         # Fork PRs get a read-only token, so security-events: write is not available there.
         if: >-
           ${{ !cancelled() && steps.trivy-report.outcome == 'success' &&
           (github.event_name != 'pull_request' ||
           github.event.pull_request.head.repo.full_name == github.repository) }}
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/trivy.sarif
           category: trivy-image
 
-      # ---- Publish: push to main only. These steps carry no status function, so they run only if
-      # every step above succeeded; a CRITICAL from the Trivy gate stops the job before this point.
+  publish:
+    name: Publish to GHCR
+    # Only after every check passed, only for pushes to main, through the `release` environment
+    # (deployment branch policy: main only). This is the only job holding write/sign permissions.
+    needs: [image]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    # One publish at a time, never cancelled half-way, so tag updates never interleave.
+    concurrency:
+      group: publish-ghcr
+      cancel-in-progress: false
+    permissions:
+      contents: read # also used to read the current head of main
+      packages: write # push to GHCR
+      id-token: write # OIDC token for the Sigstore signing certificate of the attestation
+      attestations: write # store the build provenance attestation
+    env:
+      TRIVY_VERSION: "0.76.1"
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0 # Linux-64bit.tar.gz
+      COMMIT: ${{ github.sha }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name
+        id: image
+        # Registry paths must be lowercase; github.repository keeps the owner's case.
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPO,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata (OCI labels and annotations)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          # Provenance/SBOM turn the push into an image index; GHCR reads the description from there.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ steps.image.outputs.name }}
+          labels: |
+            org.opencontainers.image.title=tdb-bookings
+            org.opencontainers.image.description=Minimal bookings web service (FastAPI)
+            org.opencontainers.image.licenses=NOASSERTION
+          annotations: |
+            org.opencontainers.image.title=tdb-bookings
+            org.opencontainers.image.description=Minimal bookings web service (FastAPI)
+            org.opencontainers.image.licenses=NOASSERTION
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        if: ${{ env.PUBLISH == 'true' }}
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push image with SBOM and provenance
+      - name: Reuse the image if this commit is already published
+        id: existing
+        # sha-<commit> is never overwritten: a re-run of this job reuses the published digest
+        # instead of building a new one (BUILD_DATE would give it a different digest).
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          set -euo pipefail
+          if digest=$(docker buildx imagetools inspect "${IMAGE}:sha-${COMMIT}" \
+                         --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest); then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "::notice::sha-${COMMIT} already published as ${digest}; reusing it"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push image by digest (untagged until it passes the scan below)
         id: push
-        if: ${{ env.PUBLISH == 'true' }}
-        # Same builder, context, build args and labels as the scanned build, so every layer is a
-        # cache hit: the pushed layers are the ones Trivy just scanned. Only the attestations are new.
+        if: ${{ steps.existing.outputs.found != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           cache-from: type=gha
+          no-cache-filters: runtime
           provenance: mode=max
           sbom: true
 
+      - name: Candidate digest
+        id: candidate
+        env:
+          EXISTING: ${{ steps.existing.outputs.digest }}
+          PUSHED: ${{ steps.push.outputs.digest }}
+        run: |
+          digest="${PUSHED:-$EXISTING}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Trivy gate on the exact pushed digest (fresh DB; any CRITICAL stops publishing)
+        # Scans what will be tagged, not a rebuild of it. Uses the GHCR login above.
+        env:
+          REF: ${{ steps.image.outputs.name }}@${{ steps.candidate.outputs.digest }}
+        run: |
+          trivy image --image-src remote --platform linux/amd64 --scanners vuln --no-progress \
+            --severity CRITICAL --exit-code 1 --format table "$REF"
+
+      - name: Tag sha-<commit>
+        if: ${{ steps.existing.outputs.found != 'true' }}
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: docker buildx imagetools create --tag "${IMAGE}:sha-${COMMIT}" "${IMAGE}@${DIGEST}"
+
+      - name: Move main only if this commit is still the head of main
+        id: main-tag
+        # Runs can finish out of order; an older commit must never overwrite a newer :main.
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${REPO}/commits/main" --jq .sha)
+          if [ "$head" = "$COMMIT" ]; then
+            docker buildx imagetools create --tag "${IMAGE}:main" "${IMAGE}@${DIGEST}"
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at ${head}; leaving :main alone (that commit's run moves it)"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Attest build provenance (signed, stored in GHCR and the GitHub attestations API)
-        if: ${{ env.PUBLISH == 'true' }}
+        if: ${{ steps.existing.outputs.found != 'true' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.candidate.outputs.digest }}
           push-to-registry: true
           # Storage records need the extra artifact-metadata: write permission and are not used here.
           create-storage-record: false
@@ -317,37 +431,28 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           IMAGE: ${{ steps.image.outputs.name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-          COMMIT: ${{ github.sha }}
-          OWNER: ${{ github.repository_owner }}
-          BUILD: ${{ steps.build.outcome }}
-          REPORT: ${{ steps.trivy-report.outcome }}
-          PUSH: ${{ steps.push.outcome }}
-          GATE: ${{ steps.trivy-gate.outcome }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+          REUSED: ${{ steps.existing.outputs.found }}
+          MOVED: ${{ steps.main-tag.outputs.moved }}
+          WORKFLOW: ${{ github.repository }}/.github/workflows/ci.yaml
         run: |
+          tags="\`sha-${COMMIT}\`"
+          if [ "${MOVED:-}" = true ]; then tags="${tags}, \`main\`"; fi
           {
-            echo "## Container image"
+            echo "## Published image"
             echo
             echo "| | |"
             echo "|---|---|"
             echo "| Commit | \`${COMMIT}\` |"
-            echo "| Build | ${BUILD} |"
-            echo "| Trivy CRITICAL gate | ${GATE:-skipped} |"
-            echo "| Trivy SARIF report | ${REPORT:-skipped} |"
-            if [ "$PUSH" = success ]; then
-              echo "| Image | \`${IMAGE}@${DIGEST}\` |"
-              printf '| Tags |'
-              while read -r tag; do printf " \`%s\`" "$tag"; done <<< "$TAGS"
-              echo " |"
-              echo
-              echo "Trace this image to its commit:"
-              echo
-              echo '```sh'
-              echo "docker buildx imagetools inspect ${IMAGE}:sha-${COMMIT} --format '{{json .Provenance}}'"
-              echo "gh attestation verify oci://${IMAGE}@${DIGEST} --owner ${OWNER}"
-              echo '```'
-            else
-              echo "| Published | no (publish step: ${PUSH:-not run}; publishing runs only on push to main, after every check passes) |"
-            fi
+            echo "| Digest | \`${DIGEST:-none}\` |"
+            echo "| Tags | ${tags} |"
+            echo "| Reused existing image | ${REUSED:-unknown} |"
+            echo
+            echo "Trace and verify:"
+            echo
+            echo '```sh'
+            echo "docker buildx imagetools inspect ${IMAGE}:sha-${COMMIT}"
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${WORKFLOW} --source-ref refs/heads/main"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
