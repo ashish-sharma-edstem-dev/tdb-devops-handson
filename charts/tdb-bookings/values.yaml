@@ -1,0 +1,241 @@
+# Default values for tdb-bookings.
+#
+# These defaults are safe on their own: one replica, no autoscaling, no secret referenced, locked-down pod.
+# Environment overrides live in values-dev.yaml and values-prod.yaml. Every key is validated by
+# values.schema.json, so a typo or a wrong type fails `helm lint` / `helm install` instead of the rollout.
+#
+# Never put a secret value in any values file. DATABASE_URL is read from an existing Secret (see `secret`).
+
+# -- Override the chart name part of resource names.
+nameOverride: ""
+# -- Override the full resource name (default: <release>-<chart>, or <release> if it already contains the chart name).
+fullnameOverride: ""
+
+# -- Pod count when autoscaling is disabled. Ignored when autoscaling.enabled is true (the HPA owns the count).
+replicaCount: 1
+
+image:
+  # -- Image repository.
+  repository: ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson
+  # -- Image tag, e.g. `sha-<40-char commit sha>`. Prefer `digest` for production. One of tag/digest is required.
+  tag: ""
+  # -- Image digest (`sha256:<64 hex>`). Immutable; takes precedence over `tag` when set.
+  digest: ""
+  # -- Pull policy. IfNotPresent is correct for immutable tags/digests.
+  pullPolicy: IfNotPresent
+
+# -- Secrets for pulling from a private registry, e.g. `[{name: ghcr-pull}]`. The Secrets are created out of band.
+imagePullSecrets: []
+
+serviceAccount:
+  # -- Create a dedicated ServiceAccount. Its API token is never mounted (the service does not call the K8s API).
+  create: true
+  # -- Name to use. Default: the full name when create is true, `default` otherwise.
+  name: ""
+  # -- ServiceAccount annotations, e.g. `eks.amazonaws.com/role-arn` for IRSA.
+  annotations: {}
+
+# -- Non-secret configuration, rendered into a ConfigMap and loaded with envFrom.
+config:
+  # -- APP_ENV.
+  appEnv: local
+  # -- LOG_LEVEL (uvicorn): critical, error, warning, info, debug, trace.
+  logLevel: info
+  # -- Extra non-secret environment variables (string values). Never put secrets here.
+  extraEnv: {}
+
+# -- Port the container listens on (PORT env var). Must match what probes and the Service target.
+containerPort: 8080
+
+secret:
+  # -- Name of an existing Secret holding DATABASE_URL (created by External Secrets Operator or `kubectl create
+  # secret`). Empty: no Secret is referenced and the service runs without a database.
+  existingSecret: ""
+  # -- Key inside existingSecret that holds the PostgreSQL URL.
+  databaseUrlKey: DATABASE_URL
+
+service:
+  # -- Service type. ClusterIP: exposed through an Ingress / load balancer controller, never directly.
+  type: ClusterIP
+  # -- Service port (targets the container's named port `http`).
+  port: 80
+  # -- Service annotations.
+  annotations: {}
+
+metrics:
+  # -- Add `prometheus.io/*` scrape annotations to the pods.
+  scrape: true
+  # -- Metrics path served by the app.
+  path: /metrics
+
+# -- Extra pod annotations.
+podAnnotations: {}
+# -- Extra pod labels.
+podLabels: {}
+
+# Probes all hit the dependency-free /health endpoint, so a database outage never restarts pods.
+probes:
+  # -- Path probed by the startup, readiness and liveness probes.
+  path: /health
+  # -- Startup probe: allows up to periodSeconds * failureThreshold (60 s) for the app to start before liveness applies.
+  startup:
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+  # -- Readiness probe: gates Service endpoints; a pod receives traffic only when ready.
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 2
+    successThreshold: 1
+    failureThreshold: 3
+  # -- Liveness probe: restarts a hung process (30 s of failures).
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# -- Rolling update. maxUnavailable 0: a ready pod is only removed after its replacement is ready.
+rollingUpdate:
+  maxSurge: 25%
+  maxUnavailable: 0
+
+# -- Old ReplicaSets kept for `helm rollback` / `kubectl rollout undo`.
+revisionHistoryLimit: 5
+
+# -- Seconds a new pod must stay ready before it counts as available (catches pods that crash right after start).
+minReadySeconds: 5
+
+# -- Seconds the preStop hook sleeps before SIGTERM, so endpoint removal reaches every kube-proxy / load balancer
+# before the process stops accepting connections.
+preStopSleepSeconds: 5
+
+# -- Total shutdown budget (preStop + graceful uvicorn shutdown). Must be greater than preStopSleepSeconds.
+terminationGracePeriodSeconds: 30
+
+# -- Container resources. Requests drive scheduling and HPA utilisation; the memory limit stops a leak taking the
+# node down. No CPU limit by default: CFS throttling adds tail latency, and the CPU request already guarantees a
+# share. Set limits.cpu if the namespace's LimitRange or policy requires one.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  # -- Create a HorizontalPodAutoscaler. When true, the Deployment has no `replicas` field (the HPA owns it).
+  enabled: false
+  # -- Minimum replicas.
+  minReplicas: 1
+  # -- Maximum replicas.
+  maxReplicas: 3
+  # -- Target average CPU utilisation (% of the CPU request).
+  targetCPUUtilizationPercentage: 70
+  # -- Target average memory utilisation (% of the memory request). 0 disables the memory metric.
+  targetMemoryUtilizationPercentage: 0
+  # -- HPA scaling behaviour: scale up fast, scale down slowly to avoid flapping.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+
+podDisruptionBudget:
+  # -- Create a PodDisruptionBudget. Keep off for single-replica installs: a PDB there would block node drains.
+  enabled: false
+  # -- Pods that must stay available during voluntary disruptions (node drain, cluster upgrade).
+  minAvailable: 1
+  # -- Evict pods that are not ready even when the budget is exhausted, so a crash-looping pod never blocks a drain.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+
+topologySpread:
+  # -- Spread pods across zones and nodes (the chart adds the label selector).
+  enabled: false
+  # -- Constraints. `nodeTaintsPolicy: Honor` leaves cordoned / tainted nodes (a node being drained, the kind
+  # control plane) out of the skew calculation, otherwise they would count as empty domains and block scheduling.
+  constraints:
+    - topologyKey: topology.kubernetes.io/zone
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+      nodeTaintsPolicy: Honor
+    - topologyKey: kubernetes.io/hostname
+      maxSkew: 1
+      whenUnsatisfiable: DoNotSchedule
+      nodeTaintsPolicy: Honor
+
+# -- Pod securityContext. UID/GID 10001 matches the image's USER.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container securityContext.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+
+# -- Size limit of the writable emptyDir mounted at /tmp (the root filesystem is read-only).
+tmpSizeLimit: 64Mi
+
+networkPolicy:
+  # -- Create a NetworkPolicy. Ingress is then allowed only to the http port, only from the peers below.
+  enabled: false
+  # -- Also allow pods in the release namespace labelled `<fullname>-client: "true"` (the helm test pod uses it).
+  allowClientLabel: true
+  # -- NetworkPolicyPeers allowed to reach the http port, e.g. the ingress controller or Prometheus namespace.
+  ingressFrom: []
+  egress:
+    # -- Restrict egress. When true, only DNS (to kube-dns) and the rules below are allowed.
+    enabled: false
+    # -- Extra NetworkPolicyEgressRules, e.g. PostgreSQL 5432 to the database subnets.
+    rules: []
+
+ingress:
+  # -- Create an Ingress. Off by default: exposure is a platform decision.
+  enabled: false
+  # -- IngressClass name, e.g. `alb` or `nginx`.
+  className: ""
+  # -- Ingress annotations.
+  annotations: {}
+  # -- Hosts and paths.
+  hosts:
+    - host: bookings.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS blocks (`secretName` + `hosts`).
+  tls: []
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity rules.
+affinity: {}
+# -- PriorityClass name.
+priorityClassName: ""
+
+tests:
+  # -- Render the `helm test` pod. It runs the service image's own Python against /health, so no extra image
+  # (curl, busybox) is pulled.
+  enabled: true

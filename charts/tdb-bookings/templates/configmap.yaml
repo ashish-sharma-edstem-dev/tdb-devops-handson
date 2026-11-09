@@ -1,0 +1,15 @@
+{{- /* Non-secret configuration only. DATABASE_URL is never rendered here (see deployment.yaml secretKeyRef). */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tdb-bookings.fullname" . }}
+  labels:
+    {{- include "tdb-bookings.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.config.appEnv | quote }}
+  HOST: "0.0.0.0"
+  PORT: {{ .Values.containerPort | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
