@@ -132,3 +132,21 @@ HPA, PodDisruptionBudget, NetworkPolicy, optional Ingress, a `helm test`, and a 
 | Install, `helm test` | 3 pods, one per zone; test pod `Succeeded` |
 | Rolling upgrade (config change → new ReplicaSet) | `ok=5343 errors=0` |
 | Drain two of three workers at once | PDB allowed one eviction at a time ("would violate the pod's disruption budget"), pods moved one at a time: `ok=1616 errors=0` |
+
+## P4: Terraform for AWS
+
+[`infra/terraform/`](infra/terraform/README.md): VPC and PostgreSQL for dev and prod in `ap-south-1`. Never applied from
+this repo; CI runs `fmt`, `validate`, plan-time `terraform test` with a mocked provider, `tflint` and `checkov`.
+
+| | dev | prod |
+|---|---|---|
+| AZs | 2 | 3 (survives the loss of one) |
+| NAT | 1 shared | 1 per AZ; each app subnet routes to the NAT in its own AZ |
+| PostgreSQL | single-AZ, `db.t4g.micro` | Multi-AZ (synchronous standby, automatic failover), deletion protection, 30-day backups |
+
+- **Not reachable from the internet:** DB subnets have no internet route, `publicly_accessible = false`, and `sg-db`
+  allows 5432 only from `sg-app`. TLS is enforced on top (`rds.force_ssl = 1`).
+- **No secrets:** RDS generates the master password into Secrets Manager (`manage_master_user_password`), KMS-encrypted.
+- **Team-safe state:** S3 backend per env (versioned, SSE-KMS, TLS-only bucket policy) with **native S3 locking**
+  (`use_lockfile = true`): a second `plan`/`apply` on the same env fails with "Error acquiring the state lock" instead
+  of writing. Details: [How Terraform state is stored and shared](infra/terraform/README.md#how-terraform-state-is-stored-and-shared).
