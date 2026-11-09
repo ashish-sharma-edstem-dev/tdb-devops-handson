@@ -59,10 +59,11 @@ tdb-devops-handson/
 | Reports health | `HEALTHCHECK` using the image's own Python (`urllib`), so no curl is added. Kubernetes uses its own probes (P3). |
 | Signals / shutdown | `exec`-form `CMD`, so uvicorn is PID 1 and gets SIGTERM for graceful shutdown. |
 
-Base image options compared in the PR: `python:3.13-slim` (chosen: matches the pinned Python, glibc wheels work,
-maintained by Docker Official Images, few criticals) vs `distroless/python3` (smaller, but ships Python 3.11, a
-mismatch with the lock) vs `alpine` (musl: wheels rebuild from source, slower and larger in practice) vs Chainguard
-(near-zero CVEs, but only the `latest` tag is free, so it cannot be pinned to a Python minor version).
+Base image options compared in the PR and in `docs/adr/0001-container-base-image.md`: `python:3.13-slim` (chosen:
+exact Python version in the tag so Dependabot can track it, glibc wheels work, apt available for security fixes) vs
+`distroless/python3-debian13` (smaller and also Python 3.13, but a Debian-packaged Python at a different path, tags do
+not name the Python version, and no apt to patch OS CVEs between base releases) vs `alpine` (musl: wheels rebuild from
+source) vs Chainguard (near-zero CVEs, but only the `latest` tag is free, so it cannot be pinned to a Python minor).
 
 Local proof: `docker build`, `docker run -e PORT=…`, `curl /health`, `docker inspect` (User, Health status, Size),
 container started with `--read-only --cap-drop ALL`.
