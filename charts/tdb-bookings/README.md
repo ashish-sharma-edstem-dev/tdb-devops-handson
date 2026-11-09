@@ -226,11 +226,14 @@ helm upgrade --install tdb-bookings charts/tdb-bookings -n tdb-prod \
   -f charts/tdb-bookings/values-prod.yaml \
   --set image.repository=tdb-bookings --set image.tag=local --set image.allowMutableTag=true \
   --wait --timeout 5m
+# Re-running this after a rebuild does NOT roll the pods: the tag `local` and the pod template are unchanged,
+# so Kubernetes keeps the old image. After every `docker build` + `kind load`, restart explicitly:
+kubectl -n tdb-prod rollout restart deployment/tdb-bookings
 kubectl -n tdb-prod rollout status deployment/tdb-bookings
 # The HPA (not the Deployment) sets the count to 3, one sync after install:
 kubectl -n tdb-prod wait deployment/tdb-bookings --for=jsonpath='{.status.availableReplicas}'=3 --timeout=2m
 kubectl -n tdb-prod get pods -o wide            # 3 pods, one per worker
-kubectl -n tdb-prod get hpa,pdb                 # HPA min 3 / max 10; PDB min available 2, allowed disruptions 1
+kubectl -n tdb-prod get hpa,pdb                 # HPA min 3 / max 10; PDB max unavailable 1, allowed disruptions 1
 helm -n tdb-prod test tdb-bookings
 ```
 
