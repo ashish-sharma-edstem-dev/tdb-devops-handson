@@ -17,10 +17,11 @@ htmlcov/
 .terraform/
 *.tfstate
 *.tfstate.*
+tfplan
 *.tfplan
 crash.log
-*.auto.tfvars
-!*.auto.tfvars.example
+*.tfvars
+!*.tfvars.example
 
 # Helm
 charts/*/charts/
