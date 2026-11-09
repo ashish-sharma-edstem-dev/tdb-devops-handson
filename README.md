@@ -77,3 +77,27 @@ docker inspect --format '{{.Config.User}} {{.State.Health.Status}}' <container> 
 - `HEALTHCHECK` uses the image's own Python, so no curl is added.
 - The same image runs everywhere: `PORT`, `APP_ENV`, `DATABASE_URL`, … come from the environment at run time.
 - Why this base image: [`docs/adr/0001-container-base-image.md`](docs/adr/0001-container-base-image.md).
+
+## P2: CI pipeline
+
+[`.github/workflows/ci.yaml`](.github/workflows/ci.yaml) runs on every PR and on every push to `main`:
+
+| Check | What it does |
+|---|---|
+| `Lint, type-check, test` | `uv sync --locked` (a stale lock fails), ruff, ruff format, mypy `--strict`, pytest with coverage ≥ 80% |
+| `Secret, dependency and Dockerfile scans` | gitleaks over full history, pip-audit on the locked runtime deps, hadolint |
+| `Image build, scan, publish` | buildx build with the GitHub Actions layer cache, then a Trivy gate: **any CRITICAL (fixed or not) fails the job**. On `main` only, the same job then pushes to GHCR with SBOM, provenance and a signed attestation |
+
+Published image: `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson`, tags `sha-<full commit sha>` (immutable) and
+`main`. To trace an image back to its commit:
+
+```bash
+docker buildx imagetools inspect ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:main \
+  --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}'
+gh attestation verify oci://ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:sha-<commit> \
+  --owner ashish-sharma-edstem-dev
+```
+
+Hardening: every action pinned to a commit SHA, least-privilege `permissions:` per job, no `pull_request_target`,
+scanners installed as checksum-verified binaries (the `trivy-action` tags were hijacked in March 2026), Dependabot
+for actions, uv and base images. Details: [`docs/adr/0002-ci-pipeline.md`](docs/adr/0002-ci-pipeline.md).
