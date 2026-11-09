@@ -1,0 +1,83 @@
+# Prod: at least 3 replicas across zones and nodes, autoscaling 3-10, PDB keeps 2 serving during drains.
+#
+# The image is deliberately NOT set here: every release names an immutable image, and the schema rejects an
+# install without one:
+#   helm upgrade --install tdb-bookings charts/tdb-bookings -n tdb-prod -f charts/tdb-bookings/values-prod.yaml \
+#     --set image.digest=sha256:<digest>          # preferred
+#     # or --set image.tag=sha-<40-char commit sha>
+
+# Used only if autoscaling is turned off; kept at the HPA floor so prod never drops below 3.
+replicaCount: 3
+
+image:
+  pullPolicy: IfNotPresent
+
+config:
+  appEnv: prod
+  logLevel: info
+
+# Created out of band by External Secrets Operator from AWS Secrets Manager (see README). Only the name is here.
+secret:
+  existingSecret: tdb-bookings-db
+  databaseUrlKey: DATABASE_URL
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  unhealthyPodEvictionPolicy: AlwaysAllow
+
+topologySpread:
+  enabled: true
+  constraints:
+    # Soft across zones: spread when possible, but a zone short of capacity never blocks scheduling.
+    - topologyKey: topology.kubernetes.io/zone
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+      nodeTaintsPolicy: Honor
+    # Hard across nodes: one node (or a drain) never holds more than its share.
+    - topologyKey: kubernetes.io/hostname
+      maxSkew: 1
+      whenUnsatisfiable: DoNotSchedule
+      nodeTaintsPolicy: Honor
+
+minReadySeconds: 10
+revisionHistoryLimit: 10
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 10
+
+networkPolicy:
+  enabled: true
+  allowClientLabel: true
+  ingressFrom:
+    # ALB (aws-load-balancer-controller, IP targets) reaches pods from inside the VPC.
+    # Must equal the VPC CIDR in infra/terraform.
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    # Prometheus scrapes /metrics on the same port.
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  egress:
+    enabled: true
+    rules:
+      # PostgreSQL (RDS) inside the VPC. DNS is always allowed by the chart.
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.0/16
+        ports:
+          - port: 5432
+            protocol: TCP
