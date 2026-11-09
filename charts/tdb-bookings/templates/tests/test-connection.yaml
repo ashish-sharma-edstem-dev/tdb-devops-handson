@@ -1,0 +1,47 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "tdb-bookings.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  # No app.kubernetes.io/name label: the Service, PDB and NetworkPolicy selectors must never match this pod.
+  labels:
+    helm.sh/chart: {{ include "tdb-bookings.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- include "tdb-bookings.clientLabel" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: health
+      # The service image already has Python; urllib needs no extra tool or image.
+      image: {{ include "tdb-bookings.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        - python
+        - -c
+        - |
+          import json, urllib.request
+          url = "http://{{ include "tdb-bookings.fullname" . }}:{{ .Values.service.port }}{{ .Values.probes.path }}"
+          with urllib.request.urlopen(url, timeout=5) as resp:
+              body = json.load(resp)
+          assert resp.status == 200 and body.get("status") == "ok", (resp.status, body)
+          print("OK", url, body)
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+{{- end }}

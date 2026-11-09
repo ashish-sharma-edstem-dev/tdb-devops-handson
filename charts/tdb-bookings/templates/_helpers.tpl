@@ -72,6 +72,14 @@ The schema already rejects both empty; this guard covers --disable-openapi-valid
 {{- end }}
 
 {{/*
+Label that lets a pod in the release namespace through the NetworkPolicy (networkPolicy.allowClientLabel).
+Fixed key, release-scoped value, so it stays within the 63-character label limits.
+*/}}
+{{- define "tdb-bookings.clientLabel" -}}
+tdb-bookings/client: {{ include "tdb-bookings.fullname" . }}
+{{- end }}
+
+{{/*
 ServiceAccount name.
 */}}
 {{- define "tdb-bookings.serviceAccountName" -}}

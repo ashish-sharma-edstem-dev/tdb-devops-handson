@@ -1,0 +1,20 @@
+{{ include "tdb-bookings.fullname" . }} {{ include "tdb-bookings.imageVersion" . }} is deployed to namespace {{ .Release.Namespace }}.
+
+Image:     {{ include "tdb-bookings.image" . }}
+Replicas:  {{ if .Values.autoscaling.enabled }}HPA {{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} (CPU {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%){{ else }}{{ .Values.replicaCount }} (no autoscaling){{ end }}
+PDB:       {{ if .Values.podDisruptionBudget.enabled }}minAvailable {{ .Values.podDisruptionBudget.minAvailable }}{{ else }}none{{ end }}
+Database:  {{ if .Values.secret.existingSecret }}DATABASE_URL from Secret {{ .Values.secret.existingSecret }} (key {{ .Values.secret.databaseUrlKey }}){{ else }}not configured (no Secret referenced){{ end }}
+
+Watch the rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "tdb-bookings.fullname" . }}
+
+Run the chart test (GET {{ .Values.probes.path }} through the Service):
+  helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
+
+Reach it locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tdb-bookings.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s localhost:8080/health
+{{- if .Values.secret.existingSecret }}
+
+The Secret {{ .Values.secret.existingSecret }} must exist before pods can start (CreateContainerConfigError otherwise).
+{{- end }}

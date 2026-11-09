@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tdb-bookings.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tdb-bookings.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tdb-bookings.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if $np.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    {{- if or $np.allowClientLabel $np.ingressFrom }}
+    # Only the http port, only from the listed peers. Everything else is denied.
+    - ports:
+        - port: http
+          protocol: TCP
+      from:
+        {{- if $np.allowClientLabel }}
+        - podSelector:
+            matchLabels:
+              {{- include "tdb-bookings.clientLabel" . | nindent 14 }}
+        {{- end }}
+        {{- with $np.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    {{- else }}
+    []
+    {{- end }}
+  {{- if $np.egress.enabled }}
+  egress:
+    # DNS to the cluster resolver.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with $np.egress.rules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

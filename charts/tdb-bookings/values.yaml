@@ -200,7 +200,8 @@ tmpSizeLimit: 64Mi
 networkPolicy:
   # -- Create a NetworkPolicy. Ingress is then allowed only to the http port, only from the peers below.
   enabled: false
-  # -- Also allow pods in the release namespace labelled `<fullname>-client: "true"` (the helm test pod uses it).
+  # -- Also allow pods in the release namespace labelled `tdb-bookings/client: <fullname>` (the helm test pod and
+  # the kind curl loop use it).
   allowClientLabel: true
   # -- NetworkPolicyPeers allowed to reach the http port, e.g. the ingress controller or Prometheus namespace.
   ingressFrom: []
