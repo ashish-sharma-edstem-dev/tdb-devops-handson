@@ -5,6 +5,8 @@
 #
 # Not covered (no Dependabot support): tool versions + SHA-256 pins inside .github/workflows/ci.yaml
 # (gitleaks, hadolint, trivy, pip-audit, uv). Bump those by hand, hash from the release checksums file.
+# PROMETHEUS_IMAGE in .github/workflows/monitoring.yaml is the same pin as compose.yaml: when the
+# docker-compose PR below bumps prom/prometheus, update that line in the same PR by hand.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -59,3 +61,39 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "docker"
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    # compose.yaml pins prom/prometheus by tag + digest (the app service is built locally).
+    groups:
+      compose-images:
+        patterns: ["*"]
+    commit-message:
+      prefix: "docker"
+
+  - package-ecosystem: terraform
+    # Root modules with a committed .terraform.lock.hcl. Providers used by modules/ are resolved
+    # and locked in these roots.
+    directories:
+      - /infra/terraform/bootstrap
+      - /infra/terraform/envs/dev
+      - /infra/terraform/envs/prod
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    groups:
+      terraform-providers:
+        patterns: ["*"]
+    commit-message:
+      prefix: "terraform"
