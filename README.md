@@ -150,3 +150,22 @@ this repo; CI runs `fmt`, `validate`, plan-time `terraform test` with a mocked p
 - **Team-safe state:** S3 backend per env (versioned, SSE-KMS, TLS-only bucket policy) with **native S3 locking**
   (`use_lockfile = true`): a second `plan`/`apply` on the same env fails with "Error acquiring the state lock" instead
   of writing. Details: [How Terraform state is stored and shared](infra/terraform/README.md#how-terraform-state-is-stored-and-shared).
+
+## P5: Alerts and runbook
+
+Target: **99.9% of booking requests succeed in under 1 s, over 30 days.** A request is good when it is not a 5xx and
+lands in the `le="1.0"` bucket of `http_request_duration_seconds{route=~"/bookings(/.*)?"}` (exposed on `/metrics`).
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `BookingsErrorBudgetFastBurn` | burn rate ≥ 14.4× over 1h and 5m, or ≥ 6× over 6h and 30m (2% / 5% of the month's budget gone) | page |
+| `BookingsErrorBudgetSlowBurn` | burn rate ≥ 3× over 1d and 2h, or ≥ 1× over 3d and 6h | ticket |
+| `BookingsErrorBudgetLow` | more than 75% of the 30-day budget already spent | ticket |
+| `BookingsNoTraffic` | booking traffic stopped although there was traffic in the last day | ticket |
+| `BookingsMetricsAbsent` | no booking metrics from the service at all | page |
+
+Every alert carries a `runbook_url` into [`docs/runbooks/`](docs/runbooks/README.md); the full runbook is
+[`BookingsErrorBudgetFastBurn`](docs/runbooks/BookingsErrorBudgetFastBurn.md). CI runs `promtool check rules`, `promtool
+test rules` (13 cases, e.g. all-5xx traffic, latency-only failures, idle deploy, lost traffic) and `promtool check
+config` from the pinned `prom/prometheus` image. Local stack: `docker compose up --build`, then Prometheus on
+`localhost:9090`.
