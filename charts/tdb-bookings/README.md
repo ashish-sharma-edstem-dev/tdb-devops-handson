@@ -285,8 +285,10 @@ replacement is Ready.
 
 ```bash
 kubectl -n tdb-prod get pods -o wide
-kubectl drain tdb-worker  --ignore-daemonsets --delete-emptydir-data &
-kubectl drain tdb-worker2 --ignore-daemonsets --delete-emptydir-data
+# --pod-selector: evict only the service's pods. Without it, drain refuses the node that hosts the bare `load`
+# pod (no controller) and that node is never drained.
+kubectl drain tdb-worker  --ignore-daemonsets --delete-emptydir-data --pod-selector app.kubernetes.io/name=tdb-bookings &
+kubectl drain tdb-worker2 --ignore-daemonsets --delete-emptydir-data --pod-selector app.kubernetes.io/name=tdb-bookings
 wait
 kubectl -n tdb-prod get pods -o wide            # all 3 Running on tdb-worker3; PDB never below 2 available
 kubectl uncordon tdb-worker tdb-worker2
