@@ -1,0 +1,77 @@
+# CI for tdb-bookings. See docs/adr/0002-ci-pipeline.md for the design.
+#
+# Pull request : lint, type-check, test, secret/dependency/Dockerfile scans, image build + Trivy scan.
+# Push to main : all of the above, then publish the scanned image to GHCR with provenance.
+#
+# Supply chain: every third-party action is pinned to a full commit SHA (tag in the comment for
+# humans and Dependabot); downloaded tools are pinned by version and verified against a
+# hard-coded SHA-256. Versions follow a 14-day cooldown: the newest release at least two weeks old.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
+# PRs: a new push cancels the superseded run. main: one group per commit, so every merged
+# commit runs to completion and gets its own image (nothing queued behind another run is dropped).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.12.5" # the uv release uv.lock was produced with (matches the Dockerfile)
+
+jobs:
+  lint-test:
+    name: Lint, type-check, test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Check uv.lock matches pyproject.toml
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy app tests .claude/hooks/guard.py
+
+      - name: Pytest with coverage
+        run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80
