@@ -36,23 +36,27 @@ Use `python:3.13.18-slim` (Debian 13 "trixie"), pinned by multi-arch index diges
 runtime stage. Build the venv in the builder with uv (`ghcr.io/astral-sh/uv:0.12.5`, also pinned by digest) and copy
 only the venv and `app/` into the runtime stage.
 
-Two hardening steps in the runtime stage, both driven by the Trivy scan:
+Hardening steps in the runtime stage (the first two driven by the Trivy scan):
 
 1. `apt-get install --only-upgrade zlib1g`: the pinned digest predates the Debian security build that fixes two
    HIGH zlib CVEs (CVE-2026-76844, CVE-2026-85091). Remove the step once a newer base digest carries the fix.
 2. Delete `pip` and `ensurepip`. uv installs everything at build time; an installer has no job at run time, and
    pip's vendored `urllib3`, `msgpack` and `setuptools` accounted for all 5 HIGH Python-package findings.
+3. Strip setuid/setgid bits from every file (`su`, `passwd`, `mount`, …), added in review, so nothing in the image
+   can gain privileges even where a runtime forgets `--cap-drop ALL` / `no-new-privileges`.
 
 ## Consequences
 
-- Image: **228 MB uncompressed (`docker image inspect` 227,754,942 bytes), 49.2 MB compressed content.** The base
-  is 202 MB of that; the app's venv is 19.5 MB and the code 29 kB. Deleting pip in a later layer hides it but does not
+- Image: **230 MB uncompressed, ~49 MB compressed content** (README.md). It was 228 MB (227,754,942 bytes) when first
+  measured, before the review hardening of the runtime layer (setuid strip, pip-removal check). The base is 202 MB of
+  that; the app's venv is 19.5 MB and the code 29 kB. Deleting pip in a later layer hides it but does not
   shrink the base layer, so the size gain from that step is nil; the point is that the scanner and an attacker no
   longer find an installer.
 - Trivy (CRITICAL,HIGH): **0 CRITICAL, 47 HIGH, all in Debian OS packages with no fix available** (46 `affected`,
   1 `fix_deferred`; 11 unique CVEs in util-linux, ncurses, sqlite, systemd libs, libacl, perl-base). 0 Python-package
-  findings. With `--ignore-unfixed` the scan is clean, so CI can gate on fixable CRITICAL/HIGH without a permanent
-  allow-list.
+  findings. CI (`.github/workflows/ci.yaml`) gates on **any CRITICAL, including unfixed ones** (`--ignore-unfixed` is
+  deliberately not set), both on every build and again on the exact pushed digest before publishing. HIGH and MEDIUM
+  are reported to code scanning as SARIF and do not block, so the 47 unfixable OS HIGHs need no permanent allow-list.
 - The remaining OS CVEs are in Debian `Essential` packages that cannot be removed cleanly. The service does not invoke
   them, runs as UID 10001 with `--cap-drop ALL`, `no-new-privileges` and a read-only root filesystem, which removes
   the usual exploitation paths (setuid binaries, writing to the filesystem).
