@@ -335,7 +335,7 @@ jobs:
           IMAGE: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
-          # Only a confirmed "not found" means unpublished. Any other failure (auth, rate limit,
+          # Only a confirmed "not found" (tag or package) means unpublished. Any other failure (auth, rate limit,
           # registry outage) stops the job: treating it as "absent" would rebuild and overwrite
           # an existing sha-<commit> tag with different bytes.
           if out=$(docker buildx imagetools inspect "${IMAGE}:sha-${COMMIT}" \
@@ -344,7 +344,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "digest=${digest}" >> "$GITHUB_OUTPUT"
             echo "::notice::sha-${COMMIT} already published as ${digest}; reusing it"
-          elif grep -qiE 'not found|manifest unknown' <<< "$out"; then
+          elif grep -qiE 'not found|manifest unknown|name unknown' <<< "$out"; then
             echo "found=false" >> "$GITHUB_OUTPUT"
           else
             echo "::error::could not tell whether sha-${COMMIT} exists: ${out}"
