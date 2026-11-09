@@ -13,7 +13,7 @@ is the deliverable; the service is deliberately small.
 
 | Task | Command |
 |---|---|
-| Install deps (locked) | `uv sync --frozen` |
+| Install deps (locked) | `uv sync --locked` (fails if `uv.lock` is stale) |
 | Run locally | `PORT=8080 uv run python -m app.main` |
 | Unit tests | `uv run pytest` |
 | Lint + format check | `uv run ruff check . && uv run ruff format --check .` |

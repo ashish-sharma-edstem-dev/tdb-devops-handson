@@ -33,7 +33,7 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --locked --no-dev --no-install-project
 
 # ---------------------------------------------------------------------------------------------
 # Same base as the builder, so the venv's interpreter path and ABI match exactly.

@@ -37,7 +37,7 @@ All configuration comes from environment variables. The same build runs in every
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --frozen
+uv sync --locked
 PORT=8080 uv run python -m app.main
 curl -s localhost:8080/health      # {"status":"ok"}
 curl -s localhost:8080/bookings

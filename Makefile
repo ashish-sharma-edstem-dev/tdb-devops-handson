@@ -4,7 +4,7 @@ IMAGE ?= tdb-bookings:local
 PORT ?= 8080
 
 install:
-	uv sync --frozen
+	uv sync --locked
 
 run:
 	uv run python -m app.main
@@ -22,7 +22,8 @@ typecheck:
 check: lint typecheck test
 
 docker-build:
-	docker build -t $(IMAGE) .
+	docker build --build-arg VCS_REF=$$(git rev-parse HEAD) \
+		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) -t $(IMAGE) .
 
 # Same hardening as production: read-only root filesystem, no capabilities, no privilege gain.
 docker-run:
