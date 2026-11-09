@@ -138,7 +138,8 @@ environment and is asserted by `envs/dev/tests/dev.tftest.hcl` so it cannot leak
 
 ## The database is not reachable from the internet
 
-Four independent layers; any one alone would block internet access:
+Three independent network layers; any one alone blocks internet access. TLS (4) is on top: it protects the
+connection, it is not an access barrier.
 
 1. **No route.** DB subnets use a route table with only the VPC-local route: no internet gateway, no NAT. Nothing in
    them can reach, or be reached from, outside the VPC. They do not share a route table with any other tier.
@@ -146,7 +147,7 @@ Four independent layers; any one alone would block internet access:
    a private address.
 3. **Security group.** `sg-db` has exactly one ingress rule, TCP 5432 from `sg-app`, and no CIDR rules. It has no
    egress rules at all (Terraform removes AWS's default allow-all egress), so the database cannot open connections out.
-4. **TLS required.** Parameter group sets `rds.force_ssl = 1` and `ssl_min_protocol_version = TLSv1.2`, so even an
+4. **TLS required (encryption, not access control).** Parameter group sets `rds.force_ssl = 1` and `ssl_min_protocol_version = TLSv1.2`, so even an
    allowed client must use TLS. Apps should use `sslmode=verify-full` with the RDS CA bundle (`rds-ca-rsa2048-g1`).
 
 The default security group of the VPC is emptied, and the main route table has no routes, so a resource created later
@@ -160,6 +161,12 @@ can open 5432 to the DB. Only the EKS node group / pod security-group binding fo
 treat adding it anywhere else as a change that needs review. Routes and security groups are the controls today; a
 DB-tier network ACL is not added (it would duplicate the security-group rule and needs ephemeral-port rules kept in
 sync).
+
+**Backups outlive their key only for 30 days.** Destroying an environment keeps the final snapshot and the automated
+backups, but also schedules the DB's KMS key for deletion (30-day window). Within that window,
+`aws kms cancel-key-deletion --key-id <id>` (human-only) keeps the snapshot restorable; after it, the snapshot is
+unusable. Prod has `deletion_protection` on, so this only bites on a deliberate destroy. A key managed outside the
+environment's lifecycle would remove the risk and is the follow-up if dev snapshots must be kept.
 
 ## How the application gets the database password
 
@@ -215,7 +222,7 @@ CIDRs, extra subnet in the subnet group) turns the suite red.
 |---|---|---|
 | CKV_AWS_109, CKV_AWS_111, CKV_AWS_356 | the three KMS key policies | In a key policy `Resource "*"` means "this key"; admin stays with the account root so IAM policies govern use. The logs service grant is pinned by encryption context to specific log groups. |
 | CKV_AWS_144 | state bucket | No cross-region replication: versioning + KMS deletion window cover the realistic loss cases for a single-region service. |
-| CKV_AWS_18 | state bucket | No server access logs: CloudTrail data events are the audit source; a second bucket for one small bucket's logs is not worth it. |
+| CKV_AWS_18 | state bucket | No server access logs. Audit of state reads/writes must come from **CloudTrail S3 data events for this bucket**, which this code does not create: it assumes the account/organization trail covers them (CloudTrail does not log S3 object access by default). Check that before relying on it. |
 | CKV2_AWS_62 | state bucket | No consumer for S3 event notifications. |
 | CKV2_AWS_5 | `sg-app` | Attached by the EKS node group / pods, which are outside this stack. |
 | CKV_AWS_157 | `aws_db_instance` | `multi_az` is an input: true in prod (asserted by tests), false in dev for cost. |

@@ -36,7 +36,7 @@ resource "aws_kms_alias" "state" {
 
 resource "aws_s3_bucket" "state" {
   #checkov:skip=CKV_AWS_144:Cross-region replication not used: versioning + the 30-day KMS deletion window cover the realistic loss cases (bad apply, deleted object) for a single-region service.
-  #checkov:skip=CKV_AWS_18:Server access logs not enabled: CloudTrail data events are the audit source for state access; a separate log bucket is not worth it for one small bucket.
+  #checkov:skip=CKV_AWS_18:No server access logs; state access is audited by the account/org CloudTrail S3 data events (not created here, must exist - see README).
   #checkov:skip=CKV2_AWS_62:No consumer for event notifications on state writes.
   bucket = local.bucket_name
 
