@@ -54,21 +54,26 @@ jobs:
           grep -qx "${KUBECONFORM_SHA256}  kubeconform-linux-amd64.tar.gz" "${tmp}/CHECKSUMS"
           echo "${KUBECONFORM_SHA256}  ${tmp}/kubeconform-linux-amd64.tar.gz" | sha256sum --check --strict
           tar -xzf "${tmp}/kubeconform-linux-amd64.tar.gz" -C "${tmp}" kubeconform
-          sudo install -m 0755 "${tmp}/kubeconform" /usr/local/bin/kubeconform
+          mkdir -p "${HOME}/.local/bin"
+          install -m 0755 "${tmp}/kubeconform" "${HOME}/.local/bin/kubeconform"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           helm version --short
-          kubeconform -v
+          "${HOME}/.local/bin/kubeconform" -v
 
       - name: Lint, render and validate
         env:
-          # Any immutable tag works for rendering; this is the tag CI would publish for this commit.
-          IMAGE_TAG: sha-${{ github.sha }}
+          # Prod values name no image on purpose (every prod release must pass one). CI passes the tag the image
+          # pipeline publishes for this commit. Dev is validated exactly as committed (it follows `main`).
+          PROD_IMAGE_TAG: sha-${{ github.sha }}
         run: |
           set -euo pipefail
           for env in dev prod; do
             echo "::group::${env}"
-            helm lint --strict "${CHART}" -f "${CHART}/values-${env}.yaml" --set "image.tag=${IMAGE_TAG}"
+            image_set=""
+            if [ "${env}" = prod ]; then image_set="image.tag=${PROD_IMAGE_TAG}"; fi
+            helm lint --strict "${CHART}" -f "${CHART}/values-${env}.yaml" ${image_set:+--set "${image_set}"}
             helm template "tdb-bookings" "${CHART}" --namespace "tdb-${env}" \
-              -f "${CHART}/values-${env}.yaml" --set "image.tag=${IMAGE_TAG}" \
+              -f "${CHART}/values-${env}.yaml" ${image_set:+--set "${image_set}"} \
               --kube-version "${KUBERNETES_VERSION}" > "rendered-${env}.yaml"
             kubeconform -strict -summary -kubernetes-version "${KUBERNETES_VERSION}" \
               -schema-location default \
