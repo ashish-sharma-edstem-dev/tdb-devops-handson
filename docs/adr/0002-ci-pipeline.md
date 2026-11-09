@@ -16,7 +16,7 @@ One workflow, `ci.yaml`, three jobs:
 
 | Job (check name) | Runs on | What it does |
 |---|---|---|
-| `lint-test` (**Lint, type-check, test**) | PR, push to main | `uv lock --check`, `uv sync --frozen`, ruff, ruff format, mypy, pytest with coverage (fails under 80%) |
+| `lint-test` (**Lint, type-check, test**) | PR, push to main | `uv sync --locked` (fails if `uv.lock` is stale), ruff, ruff format, mypy, pytest with coverage (fails under 80%) |
 | `security` (**Secret, dependency and Dockerfile scans**) | PR, push to main | gitleaks over the full git history, hadolint on `Dockerfile`, pip-audit on the locked runtime dependencies |
 | `image` (**Image build, scan, publish**) | PR, push to main; needs both jobs above | buildx build (GHA layer cache) → Trivy gate → Trivy SARIF → *(push to main only)* push, SBOM, provenance, attestation |
 

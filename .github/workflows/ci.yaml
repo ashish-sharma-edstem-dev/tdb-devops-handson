@@ -59,11 +59,8 @@ jobs:
             uv.lock
             pyproject.toml
 
-      - name: Check uv.lock matches pyproject.toml
-        run: uv lock --check
-
-      - name: Install locked dependencies
-        run: uv sync --frozen
+      - name: Install locked dependencies (fails if uv.lock is stale)
+        run: uv sync --locked
 
       - name: Ruff lint
         run: uv run ruff check --output-format=github .
@@ -138,7 +135,7 @@ jobs:
         # --strict: a dependency that cannot be audited fails the step instead of being skipped.
         run: |
           set -euo pipefail
-          uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+          uv export --locked --no-dev --no-emit-project --format requirements-txt \
             -o "$RUNNER_TEMP/requirements.txt"
           uvx "pip-audit==${PIP_AUDIT_VERSION}" -r "$RUNNER_TEMP/requirements.txt" \
             --require-hashes --disable-pip --strict --progress-spinner off

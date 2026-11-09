@@ -49,6 +49,11 @@ updates:
       timezone: Asia/Kolkata
     cooldown:
       default-days: 7
+    # Tracks both FROM images in the root Dockerfile: python:3.13.x-slim and ghcr.io/astral-sh/uv
+    # (tag + digest). The service requires Python <3.14 (pyproject.toml), so never propose 3.14+.
+    ignore:
+      - dependency-name: "python"
+        versions: [">=3.14"]
     groups:
       docker-base-images:
         patterns: ["*"]
