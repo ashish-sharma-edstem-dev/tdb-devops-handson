@@ -59,7 +59,9 @@ The pod gets it through `env[].valueFrom.secretKeyRef`, so the value goes from t
 passes through Helm, a values file or git. The schema also refuses `DATABASE_URL` in `config.extraEnv`.
 
 **Real environments:** External Secrets Operator syncs the RDS credentials that AWS Secrets Manager generates (P4)
-into that Secret. ESO reads Secrets Manager with an IRSA role that can only `GetSecretValue` on that one secret.
+into that Secret. ESO reads Secrets Manager with an IRSA role that has only `secretsmanager:GetSecretValue` on that one
+secret (`db_master_secret_arn` output) and `kms:Decrypt` on the customer-managed key the secret is encrypted with
+(`db_kms_key_arn` output); without the second permission the read fails.
 Example (documentation only, not a chart template: the ExternalSecret belongs to the platform, and the chart must
 also work with any other way of creating the Secret):
 
@@ -80,13 +82,17 @@ spec:
     template:
       engineVersion: v2
       data:
-        DATABASE_URL: "postgresql://{{ .username }}:{{ .password | urlquery }}@<rds-endpoint>:5432/bookings?sslmode=require"
+        DATABASE_URL: "postgresql://{{ .username }}:{{ .password | urlquery }}@<rds-endpoint>:5432/bookings?sslmode=verify-full&sslrootcert=<path-to-rds-ca-bundle>"
   data:
     - secretKey: username
       remoteRef: { key: <rds-master-user-secret-arn>, property: username }
     - secretKey: password
       remoteRef: { key: <rds-master-user-secret-arn>, property: password }
 ```
+
+`sslmode=verify-full` checks the server certificate and hostname, so the client needs the RDS CA bundle
+(`rds-ca-rsa2048-g1`, see `infra/terraform/README.md`) at the `sslrootcert` path. The chart does not ship or mount it;
+provide it in the image or through a volume when the service starts using the database.
 
 A rotated password reaches running pods on the next rollout (env vars are read at start): run
 `kubectl rollout restart`, or add Stakater Reloader to restart on Secret change.
