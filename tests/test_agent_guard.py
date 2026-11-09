@@ -137,3 +137,91 @@ def test_hook_exit_codes_follow_contract() -> None:
 
 def test_hook_fails_closed_on_bad_input() -> None:
     assert _run_hook("not json").returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -i '' 's/deny/allow/' .claude/settings.json",
+        "echo '{}' > .claude/settings.json",
+        "printf x >> .claude/hooks/guard.py",
+        "cat new.json | tee .claude/settings.json",
+        "cp /tmp/evil.py .claude/hooks/guard.py",
+        "mv .claude/hooks/guard.py /tmp/",
+        "rm -f .github/CODEOWNERS",
+        "truncate -s 0 .claude/hooks/guard.py",
+        "perl -pi -e 's/a/b/' .claude/settings.local.json",
+        "uv run pytest && echo x > .github/CODEOWNERS",
+    ],
+)
+def test_shell_writes_to_agent_controls_are_denied(command: str) -> None:
+    verdict = guard.check_guardrail_write(command)
+    assert verdict is not None and verdict[0] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -i 's/v1/v2/' .github/workflows/ci.yaml",
+        "echo '# x' >> .pre-commit-config.yaml",
+        "cp /tmp/ci.yaml .github/workflows/ci.yaml",
+        "rm .github/dependabot.yml",
+    ],
+)
+def test_shell_writes_to_ci_guardrails_ask(command: str) -> None:
+    verdict = guard.check_guardrail_write(command)
+    assert verdict is not None and verdict[0] == "ask"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat .claude/settings.json",
+        "grep -n deny .claude/settings.json",
+        "cp .github/workflows/ci.yaml /tmp/ci.yaml",
+        "sed -n 1,20p .github/workflows/ci.yaml",
+        "echo ok > /tmp/out.txt",
+        "sed -i '' 's/a/b/' app/main.py",
+        "uv run pytest 2>&1 | tail -5",
+        "actionlint .github/workflows/ci.yaml",
+    ],
+)
+def test_reads_and_other_writes_are_allowed(command: str) -> None:
+    assert guard.check_guardrail_write(command) is None
+
+
+@pytest.mark.parametrize(
+    ("tool", "path", "level"),
+    [
+        ("Edit", "/repo/.claude/settings.json", "deny"),
+        ("Write", "/repo/.claude/settings.json", "deny"),
+        ("Write", "/repo/.claude/hooks/guard.py", "deny"),
+        ("MultiEdit", "/repo/.github/CODEOWNERS", "deny"),
+        ("Edit", "/repo/.github/workflows/ci.yaml", "ask"),
+        ("Write", "/repo/.pre-commit-config.yaml", "ask"),
+        ("Edit", "/repo/.github/dependabot.yml", "ask"),
+        ("Edit", "/repo/app/main.py", None),
+        ("Read", "/repo/.claude/settings.json", None),
+    ],
+)
+def test_file_tools_on_guardrails(tool: str, path: str, level: str | None) -> None:
+    verdict = guard.decide({"tool_name": tool, "tool_input": {"file_path": path}})
+    assert (verdict[0] if verdict else None) == level
+
+
+def test_hook_asks_with_json_for_ci_guardrails() -> None:
+    event = {"tool_name": "Edit", "tool_input": {"file_path": "/r/.github/workflows/ci.yaml"}}
+    result = _run_hook(json.dumps(event))
+
+    assert result.returncode == 0
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "ask"
+    assert decision["hookEventName"] == "PreToolUse"
+
+
+def test_hook_blocks_writes_to_its_own_controls() -> None:
+    event = {"tool_name": "Bash", "tool_input": {"command": "echo {} > .claude/settings.json"}}
+    result = _run_hook(json.dumps(event))
+
+    assert result.returncode == 2
+    assert "human-only" in result.stderr
