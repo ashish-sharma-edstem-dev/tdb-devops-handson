@@ -79,7 +79,8 @@ resource "aws_db_subnet_group" "this" {
 # No egress block: Terraform removes AWS's default allow-all egress rule, so the database cannot open connections
 # out. Replies to inbound connections still flow (security groups are stateful).
 resource "aws_security_group" "db" {
-  name        = "${var.name}-db"
+  # name_prefix, not name: with create_before_destroy a fixed name would collide with the group being replaced.
+  name_prefix = "${var.name}-db-"
   description = "PostgreSQL for ${var.name}: 5432 from the app security group only"
   vpc_id      = var.vpc_id
 
