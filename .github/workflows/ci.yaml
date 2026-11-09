@@ -87,7 +87,6 @@ jobs:
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # linux_x64.tar.gz
       HADOLINT_VERSION: "2.15.1"
       HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 # linux-x86_64
-      PIP_AUDIT_VERSION: "2.10.1"
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
@@ -133,11 +132,17 @@ jobs:
         # Audits exactly what ships in the image: the locked, hash-pinned runtime set from uv.lock.
         # --disable-pip + --require-hashes: no resolver run, no packages installed.
         # --strict: a dependency that cannot be audited fails the step instead of being skipped.
+        # pip-audit itself and its whole dependency tree come from a hash-locked file
+        # (.github/tools/pip-audit.txt, compiled from pip-audit.in), so the scanner cannot change
+        # under us between runs. Regenerate with the command in that file's header comment.
         run: |
           set -euo pipefail
           uv export --locked --no-dev --no-emit-project --format requirements-txt \
             -o "$RUNNER_TEMP/requirements.txt"
-          uvx "pip-audit==${PIP_AUDIT_VERSION}" -r "$RUNNER_TEMP/requirements.txt" \
+          uv venv --quiet --python 3.13 "$RUNNER_TEMP/pip-audit"
+          uv pip install --quiet --python "$RUNNER_TEMP/pip-audit/bin/python" \
+            --require-hashes --no-deps -r .github/tools/pip-audit.txt
+          "$RUNNER_TEMP/pip-audit/bin/pip-audit" -r "$RUNNER_TEMP/requirements.txt" \
             --require-hashes --disable-pip --strict --progress-spinner off
 
   image:
