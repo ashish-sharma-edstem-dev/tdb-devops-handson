@@ -115,6 +115,12 @@ It is applied once per account by a human. Losing that local file is harmless: t
 can be re-imported. Optionally, after the first apply, add a `backend "s3"` block with key
 `bootstrap/terraform.tfstate` and run `terraform init -migrate-state` to move it into the bucket it created.
 
+**If the bootstrap's local state is lost**, nothing is deleted (`prevent_destroy`, 30-day KMS deletion window); the
+bucket and key just become unmanaged. Recover by re-importing them into a fresh bootstrap state
+(`terraform import aws_s3_bucket.state <bucket>`, `terraform import aws_kms_key.state <key id>`, and the same for the
+bucket's sub-resources), a human-only step. After the first apply, the bootstrap state can also be moved into the
+bucket it created (`terraform init -migrate-state` with an S3 backend block).
+
 ## Production survives the loss of one AZ
 
 | Component | What happens when one of the three AZs fails |
@@ -148,6 +154,12 @@ without an explicit SG or subnet association gets no access instead of accidenta
 
 `sg-app` is created by the network module and output as `app_security_group_id`. The EKS node group / pods for
 `tdb-bookings` attach it. It allows egress HTTPS anywhere (via NAT) and 5432 to the DB subnets only.
+
+**Who can reach the database.** Any workload that has the app security group attached (`sg-app`, an output of the env)
+can open 5432 to the DB. Only the EKS node group / pod security-group binding for this service should attach it;
+treat adding it anywhere else as a change that needs review. Routes and security groups are the controls today; a
+DB-tier network ACL is not added (it would duplicate the security-group rule and needs ephemeral-port rules kept in
+sync).
 
 ## How the application gets the database password
 
