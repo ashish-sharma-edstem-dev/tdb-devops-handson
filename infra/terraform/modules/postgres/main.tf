@@ -239,14 +239,16 @@ resource "aws_db_instance" "this" {
   network_type           = "IPV4"
   ca_cert_identifier     = "rds-ca-rsa2048-g1"
 
-  backup_retention_period   = var.backup_retention_days
-  backup_window             = var.backup_window
-  maintenance_window        = var.maintenance_window
-  copy_tags_to_snapshot     = true
-  delete_automated_backups  = false
-  deletion_protection       = var.deletion_protection
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.name}-final"
+  backup_retention_period  = var.backup_retention_days
+  backup_window            = var.backup_window
+  maintenance_window       = var.maintenance_window
+  copy_tags_to_snapshot    = true
+  delete_automated_backups = false
+  deletion_protection      = var.deletion_protection
+  skip_final_snapshot      = false
+  # Unique per instance lifetime: a fixed name would make the second destroy of a recreated env fail with
+  # DBSnapshotAlreadyExists. Set once at create and ignored afterwards, so plans stay clean.
+  final_snapshot_identifier = "${var.name}-final-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 
   performance_insights_enabled          = true
   performance_insights_kms_key_id       = aws_kms_key.db.arn
@@ -268,6 +270,8 @@ resource "aws_db_instance" "this" {
   ]
 
   lifecycle {
+    ignore_changes = [final_snapshot_identifier]
+
     precondition {
       condition     = var.max_allocated_storage > var.allocated_storage
       error_message = "max_allocated_storage must be greater than allocated_storage, or storage autoscaling is off."
