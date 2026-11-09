@@ -15,4 +15,4 @@ Do not open a public issue for a security problem.
 | Infrastructure code | `checkov` and `tflint` on every PR. `terraform apply` is never run from this repo's automation. |
 | CI | Least-privilege `GITHUB_TOKEN`, actions pinned by commit SHA, no `pull_request_target`. |
 | `main` | Changes only through PRs, CI must pass, review threads must be resolved, no force-push or deletion. |
-| AI agents | Permission rules + a tested pre-tool guard (`.claude/hooks/guard.py`). See `AGENTS.md` → Agent safety. |
+| AI agents | Permission rules + a tested pre-tool guard (`.claude/hooks/guard.py`) that also covers shell writes; agents cannot change their own controls, and CI/pre-commit/Dependabot edits need a human's approval. See `AGENTS.md` → Agent safety. |
