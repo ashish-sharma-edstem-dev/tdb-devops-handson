@@ -335,13 +335,20 @@ jobs:
           IMAGE: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
-          if digest=$(docker buildx imagetools inspect "${IMAGE}:sha-${COMMIT}" \
-                         --format '{{json .Manifest}}' 2>/dev/null | jq -er .digest); then
+          # Only a confirmed "not found" means unpublished. Any other failure (auth, rate limit,
+          # registry outage) stops the job: treating it as "absent" would rebuild and overwrite
+          # an existing sha-<commit> tag with different bytes.
+          if out=$(docker buildx imagetools inspect "${IMAGE}:sha-${COMMIT}" \
+                     --format '{{json .Manifest}}' 2>&1); then
+            digest=$(jq -er .digest <<< "$out")
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "digest=${digest}" >> "$GITHUB_OUTPUT"
             echo "::notice::sha-${COMMIT} already published as ${digest}; reusing it"
-          else
+          elif grep -qiE 'not found|manifest unknown' <<< "$out"; then
             echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::could not tell whether sha-${COMMIT} exists: ${out}"
+            exit 1
           fi
 
       - name: Push image by digest (untagged until it passes the scan below)
@@ -391,6 +398,18 @@ jobs:
           trivy image --image-src remote --platform linux/amd64 --scanners vuln --no-progress \
             --severity CRITICAL --exit-code 1 --format table "$REF"
 
+      # Sign before any tag points at the digest: a sha-<commit> tag therefore always means
+      # "scanned and attested", and a re-run that reuses the tag never skips signing.
+      - name: Attest build provenance (signed, stored in GHCR and the GitHub attestations API)
+        if: ${{ steps.existing.outputs.found != 'true' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.candidate.outputs.digest }}
+          push-to-registry: true
+          # Storage records need the extra artifact-metadata: write permission and are not used here.
+          create-storage-record: false
+
       - name: Tag sha-<commit>
         if: ${{ steps.existing.outputs.found != 'true' }}
         env:
@@ -416,16 +435,6 @@ jobs:
             echo "::notice::main is now at ${head}; leaving :main alone (that commit's run moves it)"
             echo "moved=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Attest build provenance (signed, stored in GHCR and the GitHub attestations API)
-        if: ${{ steps.existing.outputs.found != 'true' }}
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ steps.image.outputs.name }}
-          subject-digest: ${{ steps.candidate.outputs.digest }}
-          push-to-registry: true
-          # Storage records need the extra artifact-metadata: write permission and are not used here.
-          create-storage-record: false
 
       - name: Job summary
         if: ${{ !cancelled() }}
