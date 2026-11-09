@@ -75,3 +75,69 @@ jobs:
 
       - name: Pytest with coverage
         run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  security:
+    name: Secret, dependency and Dockerfile scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # Tools are downloaded from their GitHub releases and checked against these hashes (taken from
+      # each release's checksums file). Bump version and hash together.
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # linux_x64.tar.gz
+      HADOLINT_VERSION: "2.15.1"
+      HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 # linux-x86_64
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: Check out (full history for the secret scan)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks and hadolint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$bin" gitleaks
+          curl -sSfL --retry 3 -o "$bin/hadolint" \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          echo "${HADOLINT_SHA256}  $bin/hadolint" | sha256sum --check --strict
+          chmod +x "$bin/hadolint"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Gitleaks (committed secrets, full history)
+        run: gitleaks git --redact --no-banner --exit-code 1 .
+
+      - name: Hadolint (Dockerfile)
+        run: hadolint Dockerfile
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-suffix: security
+          cache-dependency-glob: uv.lock
+
+      - name: pip-audit (known CVEs in the locked runtime dependencies)
+        # Audits exactly what ships in the image: the locked, hash-pinned runtime set from uv.lock.
+        # --disable-pip + --require-hashes: no resolver run, no packages installed.
+        # --strict: a dependency that cannot be audited fails the step instead of being skipped.
+        run: |
+          set -euo pipefail
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+            -o "$RUNNER_TEMP/requirements.txt"
+          uvx "pip-audit==${PIP_AUDIT_VERSION}" -r "$RUNNER_TEMP/requirements.txt" \
+            --require-hashes --disable-pip --strict --progress-spinner off
