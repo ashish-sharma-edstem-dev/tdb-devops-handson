@@ -1,0 +1,281 @@
+# Unit tests for rules/bookings-slo.yaml:
+#   promtool test rules monitoring/prometheus/tests/bookings-slo.test.yaml
+# Traffic is synthetic: counters grow by a fixed amount every minute, so each case has a constant
+# error ratio and the expected alert state follows from the thresholds in the rules file.
+# Annotations are asserted too, so a broken template or runbook link fails the test.
+rule_files:
+  - ../rules/bookings-slo.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # (a) 100 req/min, 5 of them 5xx: 50x the allowed error rate. Pages once `for: 2m` has passed.
+  - name: fast burn pages on 5% errors
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+95x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+95x60'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+5x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+5x60'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are burning the monthly error budget fast
+              description: "5% of booking requests failed or took longer than 1 s (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+
+  # (a2) 5% errors for 1h, then none. The short windows (5m, 30m) reset the alert within ~30 min.
+  - name: fast burn clears once errors stop
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+95x60 5795+100x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+95x60 5795+100x60'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+5x60 305x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+5x60 305x60'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x120'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are burning the monthly error budget fast
+              description: "5% of booking requests failed or took longer than 1 s (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+      - eval_time: 95m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+
+  # (a3) 1% errors is below the 1h threshold (1.44%) but above the 6h one (0.6%).
+  - name: fast burn pages on the 6h window at 1% errors
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+990x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+990x60'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+10x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+10x60'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are burning the monthly error budget fast
+              description: "1% of booking requests failed or took longer than 1 s (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+
+  # (b) 1 failure in 2000 requests is inside the 0.1% budget: nothing fires, even after 3 hours.
+  - name: no alert at 0.05% errors
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+1999x180'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+1999x180'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+1x180'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+1x180'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x180'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: BookingsErrorBudgetSlowBurn
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: BookingsErrorBudgetLow
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: BookingsMetricsAbsent
+        exp_alerts: []
+
+  # (c) 0.4% errors for a day: 4x the budget. Too slow to page, fast enough to open a ticket; at this
+  # rate the 30-day ratio is already above 75% of the budget, so BudgetLow fires as well.
+  - name: slow burn tickets on 0.4% errors over a day
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+996x1440'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+996x1440'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0+4x1440'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0+4x1440'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x1440'
+    alert_rule_test:
+      - eval_time: 1d
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 1d
+        alertname: BookingsErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: ticket
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are slowly burning the monthly error budget
+              description: "0.4% of booking requests failed or took longer than 1 s over the last day(s) (SLO allows 0.1%). If this continues the budget runs out before the end of the 30-day window."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetSlowBurn.md
+      - eval_time: 1d
+        alertname: BookingsErrorBudgetLow
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: ticket
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Over 75% of the monthly error budget for booking requests is spent
+              description: "0.4% of booking requests in the last 30 days failed or took longer than 1 s. The SLO allows 0.1%; 0.075% means 75% of the budget is gone and above 0.1% the SLO is already missed."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetLow.md
+
+  # (d) No 5xx at all, but 10 of every 100 requests take longer than 1 s (outside the le="1.0" bucket).
+  - name: slow 2xx responses burn budget like errors
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+100x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0+90x60'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: Booking requests are burning the monthly error budget fast
+              description: "10% of booking requests failed or took longer than 1 s (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+
+  # (f) Three requests in the last hour, the latest one a 5xx: a 33% error ratio, but under the
+  # 100 requests/hour guard, so no page.
+  - name: low traffic does not page
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0x19 1x19 2x60'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx", le="1.0"}'
+        values: '0x19 1x19 2x60'
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx"}'
+        values: '0x57 1x40'
+      - series: 'http_request_duration_seconds_bucket{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="5xx", le="1.0"}'
+        values: '0x57 1x40'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x100'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: BookingsErrorBudgetFastBurn
+        exp_alerts: []
+
+  # (e) The scrape target is down (up == 0) and there are no request metrics.
+  - name: metrics absent pages when the target is down
+    interval: 1m
+    input_series:
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BookingsMetricsAbsent
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: BookingsMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: No metrics from tdb-bookings, so the booking SLO is not being monitored
+              description: "Prometheus has had no healthy scrape target or no request metrics for job tdb-bookings for 10 minutes. Either the service is down or monitoring is broken; the error-budget alerts cannot fire until this is fixed."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
+
+  # (e2) The target is up but exports no request histogram (e.g. metric renamed by a release).
+  - name: metrics absent pages when request metrics disappear
+    interval: 1m
+    input_series:
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: BookingsMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: No metrics from tdb-bookings, so the booking SLO is not being monitored
+              description: "Prometheus has had no healthy scrape target or no request metrics for job tdb-bookings for 10 minutes. Either the service is down or monitoring is broken; the error-budget alerts cannot fire until this is fixed."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
+
+  # (e3) Request series still exist but the target is down (up == 0): the up branch alone fires.
+  - name: metrics absent pages when only the target is down
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="tdb-bookings", instance="app:8080", method="GET", route="/bookings", status_class="2xx"}'
+        values: '0+100x20'
+      - series: 'up{job="tdb-bookings", instance="app:8080"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: BookingsMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              job: tdb-bookings
+              severity: page
+              service: tdb-bookings
+              slo: bookings-availability-latency
+            exp_annotations:
+              summary: No metrics from tdb-bookings, so the booking SLO is not being monitored
+              description: "Prometheus has had no healthy scrape target or no request metrics for job tdb-bookings for 10 minutes. Either the service is down or monitoring is broken; the error-budget alerts cannot fire until this is fixed."
+              runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
