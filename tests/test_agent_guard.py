@@ -152,6 +152,10 @@ def test_hook_fails_closed_on_bad_input() -> None:
         "truncate -s 0 .claude/hooks/guard.py",
         "perl -pi -e 's/a/b/' .claude/settings.local.json",
         "uv run pytest && echo x > .github/CODEOWNERS",
+        """python3 -c "open('.claude/settings.json','w').write('{}')\"""",
+        "uv run python - <<EOF\nopen('.claude/hooks/guard.py', 'w').write('')\nEOF",
+        "bash -c 'echo {} > .claude/settings.json'",
+        "node -e \"require('fs').writeFileSync('.github/CODEOWNERS','')\"",
     ],
 )
 def test_shell_writes_to_agent_controls_are_denied(command: str) -> None:
@@ -166,6 +170,7 @@ def test_shell_writes_to_agent_controls_are_denied(command: str) -> None:
         "echo '# x' >> .pre-commit-config.yaml",
         "cp /tmp/ci.yaml .github/workflows/ci.yaml",
         "rm .github/dependabot.yml",
+        "python3 - <<EOF\nopen('.github/workflows/ci.yaml','a').write('#')\nEOF",
     ],
 )
 def test_shell_writes_to_ci_guardrails_ask(command: str) -> None:

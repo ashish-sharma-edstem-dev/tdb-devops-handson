@@ -167,8 +167,23 @@ def _written_paths(part: str) -> list[str]:
     return paths
 
 
+# An interpreter can write any file without shell syntax we could parse (`python -c`, heredocs).
+INTERPRETER = re.compile(
+    r"(^|[\s;&|(])(python\d?(\.\d+)?|perl|ruby|node|deno|bun|php|(ba|z|da)?sh\s+-c)\b"
+)
+PATH_TOKEN = re.compile(r"[\w./-]*\.(?:claude|github|pre-commit-config)[\w./-]*")
+
+
 def check_guardrail_write(command: str) -> tuple[str, str] | None:
     """("deny"|"ask", reason) if a shell command writes a guardrail file, else None."""
+    if INTERPRETER.search(command):
+        # Conservative: any guardrail path mentioned next to an interpreter counts as a write.
+        levels = {(guardrail_level(t), t) for t in PATH_TOKEN.findall(command)}
+        for level, path in sorted(levels, key=lambda lp: lp[0] != "deny"):
+            if level == "deny":
+                return ("deny", f"interpreter touching a guardrail file ({path}) is human-only")
+            if level == "ask":
+                return ("ask", f"interpreter touching a guardrail file ({path}); needs approval")
     worst: tuple[str, str] | None = None
     for raw in SPLIT.split(command):
         for path in _written_paths(_strip_wrappers(raw)):
