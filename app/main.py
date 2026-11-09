@@ -1,15 +1,38 @@
 """HTTP entry point for the bookings service."""
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    GC_COLLECTOR,
+    PLATFORM_COLLECTOR,
+    PROCESS_COLLECTOR,
+    CollectorRegistry,
+    generate_latest,
+)
 
 from app import repository
 from app.config import get_settings
+from app.metrics import METRICS_PATH, PrometheusMiddleware, new_request_histogram
 from app.models import BookingList, Health
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="tdb-bookings", version="0.1.0")
+
+    # One registry per app instance (not the process-global default), so every app built by a test
+    # starts from zero and two apps never register the same metric name twice.
+    registry = CollectorRegistry()
+    # Same process / GC / Python-version metrics the default registry would export (CPU, RSS, fds).
+    for collector in (PROCESS_COLLECTOR, GC_COLLECTOR, PLATFORM_COLLECTOR):
+        registry.register(collector)
+    app.state.metrics_registry = registry
+    app.add_middleware(PrometheusMiddleware, histogram=new_request_histogram(registry))
+
+    @app.get(METRICS_PATH, include_in_schema=False)
+    def metrics() -> Response:
+        """Prometheus scrape endpoint (text exposition format)."""
+        return Response(content=generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/health", response_model=Health, tags=["ops"])
     def health() -> Health:

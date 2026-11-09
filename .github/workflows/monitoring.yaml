@@ -1,0 +1,55 @@
+name: monitoring
+
+# No path filter on purpose: a required status check that is skipped by a path filter never reports,
+# which blocks the merge. The job takes well under a minute.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoring-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # promtool from the same pinned image that compose.yaml runs, so CI checks what runs locally.
+  PROMETHEUS_IMAGE: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+
+jobs:
+  promtool:
+    name: Alert rules (promtool)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull promtool image
+        run: docker pull "$PROMETHEUS_IMAGE"
+
+      - name: Check rule syntax
+        run: >-
+          docker run --rm --entrypoint promtool
+          -v "$GITHUB_WORKSPACE/monitoring/prometheus:/w:ro" "$PROMETHEUS_IMAGE"
+          check rules --lint=all --lint-fatal /w/rules/bookings-slo.yaml
+
+      - name: Run rule unit tests
+        run: >-
+          docker run --rm --entrypoint promtool
+          -v "$GITHUB_WORKSPACE/monitoring/prometheus:/w:ro" "$PROMETHEUS_IMAGE"
+          test rules /w/tests/bookings-slo.test.yaml
+
+      - name: Check Prometheus config
+        # rule_files in prometheus.yml are relative to the config file, so they resolve under /w here
+        # and under /etc/prometheus in compose.
+        run: >-
+          docker run --rm --entrypoint promtool
+          -v "$GITHUB_WORKSPACE/monitoring/prometheus:/w:ro" "$PROMETHEUS_IMAGE"
+          check config --lint=all --lint-fatal /w/prometheus.yml

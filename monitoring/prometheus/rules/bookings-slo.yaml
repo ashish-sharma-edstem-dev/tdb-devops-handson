@@ -1,0 +1,259 @@
+# SLO: 99.9% of booking requests succeed (not 5xx) in at most 1 s, measured over 30 days.
+# Error budget = 1 - 0.999 = 0.001 of requests.
+#
+# SLI, from one histogram (app/metrics.py):
+#   good  = requests to /bookings routes that are not 5xx AND finished within 1 s (le="1.0" bucket)
+#   total = all requests to /bookings routes
+#   error ratio = 1 - good / total   (slow 2xx responses burn budget the same as 5xx)
+# 4xx responses count as good: they are client errors (bad input, unknown id), not service failures.
+#
+# Aggregation: summed per scrape job, so the ratio is for the whole service across all pods and
+# survives pod churn (no instance/pod label). One Prometheus per environment is assumed; if several
+# environments shared one Prometheus, add their distinguishing label (e.g. namespace) to `by (...)`.
+#
+# The good-request numerator is zero-filled (`or on (job) 0 * total`): if every request is a 5xx (e.g. a
+# fresh deploy that fails everything) no non-5xx bucket series exist, the numerator would be empty and
+# the ratio would vanish, silencing the burn alerts during a total outage. With the fill it is 1 (100%).
+# No booking traffic => 0/0 => NaN => no burn alert fires. The request series do not disappear in that
+# case (counters persist, and /health traffic keeps the target scraped), so BookingsMetricsAbsent does
+# NOT cover it; BookingsNoTraffic does. BookingsMetricsAbsent covers a missing target or missing
+# booking series.
+# The 30d window needs Prometheus retention of at least 30 days (compose.yaml sets 31d).
+#
+# Alerts follow the multi-window, multi-burn-rate pattern from the Google SRE Workbook, chapter 5:
+# a long window proves the burn is significant, a short window (1/12 of it) proves it is still
+# happening, so the alert also resets quickly once the problem is fixed.
+#   burn rate 14.4 for 1h = 2% of the 30-day budget gone in 1 hour  -> page
+#   burn rate 6    for 6h = 5% of the budget gone in 6 hours         -> page
+#   burn rate 3    for 1d = 10% of the budget gone in 1 day          -> ticket
+#   burn rate 1    for 3d = 10% of the budget gone in 3 days         -> ticket
+groups:
+  - name: tdb-bookings-slo-recording
+    interval: 30s
+    rules:
+      - record: slo:bookings_request_errors:ratio_rate5m
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[5m]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate30m
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30m]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30m]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30m]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate1h
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1h]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1h]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate2h
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[2h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[2h]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[2h]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate6h
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[6h]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[6h]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[6h]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate1d
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[1d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1d]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1d]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate3d
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[3d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[3d]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[3d]))
+          )
+
+      - record: slo:bookings_request_errors:ratio_rate30d
+        expr: |
+          1 - (
+            (
+              sum by (job) (rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", le="1.0", status_class!="5xx"}[30d]))
+              or on (job)
+              0 * sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30d]))
+            )
+            /
+            sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[30d]))
+          )
+
+      # Request volume over 1h, used by the paging alert's low-traffic guard.
+      - record: slo:bookings_requests:rate1h
+        expr: |
+          sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[1h]))
+
+  - name: tdb-bookings-slo-alerts
+    rules:
+      - alert: BookingsErrorBudgetFastBurn
+        # Low-traffic guard: below 100 requests in the last hour a single failed request is already
+        # >= 1% errors (10x the threshold) and would page someone at night. Those cases still reach
+        # the ticket alerts below, which use long windows where one request is noise.
+        expr: |
+          (
+            (
+                slo:bookings_request_errors:ratio_rate1h > (14.4 * 0.001)
+              and
+                slo:bookings_request_errors:ratio_rate5m > (14.4 * 0.001)
+            )
+            or
+            (
+                slo:bookings_request_errors:ratio_rate6h > (6 * 0.001)
+              and
+                slo:bookings_request_errors:ratio_rate30m > (6 * 0.001)
+            )
+          )
+          and on (job)
+          slo:bookings_requests:rate1h * 3600 >= 100
+        for: 2m
+        labels:
+          severity: page
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: Booking requests are burning the monthly error budget fast
+          description: >-
+            {{ $value | humanizePercentage }} of booking requests failed or took longer than 1 s
+            (SLO allows 0.1%). At this rate the 30-day error budget is gone in about 2 days.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetFastBurn.md
+
+      - alert: BookingsErrorBudgetSlowBurn
+        expr: |
+          (
+              slo:bookings_request_errors:ratio_rate1d > (3 * 0.001)
+            and
+              slo:bookings_request_errors:ratio_rate2h > (3 * 0.001)
+          )
+          or
+          (
+              slo:bookings_request_errors:ratio_rate3d > (1 * 0.001)
+            and
+              slo:bookings_request_errors:ratio_rate6h > (1 * 0.001)
+          )
+        for: 15m
+        labels:
+          severity: ticket
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: Booking requests are slowly burning the monthly error budget
+          description: >-
+            {{ $value | humanizePercentage }} of booking requests failed or took longer than 1 s
+            over the last day(s) (SLO allows 0.1%). If this continues the budget runs out before
+            the end of the 30-day window.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetSlowBurn.md
+
+      - alert: BookingsErrorBudgetLow
+        # Safety net for burns too slow for the alerts above: fires once 75% of the 30-day budget is
+        # spent, while there is still a quarter left to act on.
+        expr: |
+          slo:bookings_request_errors:ratio_rate30d > (0.75 * 0.001)
+        for: 1h
+        labels:
+          severity: ticket
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: Over 75% of the monthly error budget for booking requests is spent
+          description: >-
+            {{ $value | humanizePercentage }} of booking requests in the last 30 days failed or
+            took longer than 1 s. The SLO allows 0.1%; 0.075% means 75% of the budget is gone and
+            above 0.1% the SLO is already missed.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsErrorBudgetLow.md
+
+      - alert: BookingsMetricsAbsent
+        # Without data every ratio above is empty and no burn alert can fire, so silence must page.
+        # Only booking series count: /health traffic alone must not satisfy it. The app pre-creates
+        # the GET /bookings 2xx and 5xx children at startup, so an idle but healthy fresh deploy
+        # exports them (at 0) and does not trip this alert.
+        # absent() of a comparison carries no labels, so job is added back: both branches then
+        # produce the same series and `or` collapses them into one alert.
+        expr: |
+          label_replace(absent(up{job="tdb-bookings"} == 1), "job", "tdb-bookings", "", "")
+          or
+          absent(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"})
+        for: 10m
+        labels:
+          severity: page
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: No metrics from tdb-bookings, so the booking SLO is not being monitored
+          description: >-
+            Prometheus has had no healthy scrape target or no request metrics for job
+            tdb-bookings for 10 minutes. Either the service is down or monitoring is broken;
+            the error-budget alerts cannot fire until this is fixed.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsMetricsAbsent.md
+
+      - alert: BookingsNoTraffic
+        # Booking traffic stopped although the service had some in the last day. The SLI is then
+        # 0/0 = NaN, so no burn alert can fire and the series still exist, so BookingsMetricsAbsent
+        # stays quiet too. Typical causes: ingress/DNS/routing broken upstream of the pods.
+        # Severity ticket, not page: with no traffic baseline a quiet hour (night, weekend) looks the
+        # same as a routing outage, and paging on it would be noisy. The "had traffic in the last day"
+        # guard keeps an idle fresh deploy (booking series pre-created at 0) from firing at all.
+        expr: |
+          sum by (job) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[15m])) == 0
+          and on (job)
+          max_over_time(slo:bookings_requests:rate1h[1d]) > 0
+        for: 30m
+        labels:
+          severity: ticket
+          service: tdb-bookings
+          slo: bookings-availability-latency
+        annotations:
+          summary: No booking requests are reaching tdb-bookings
+          description: >-
+            tdb-bookings has received no booking requests for at least 45 minutes, although it had
+            traffic in the last day. The error-budget alerts cannot see an outage that stops all
+            traffic, so check whether clients can still reach the service.
+          runbook_url: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson/blob/main/docs/runbooks/BookingsNoTraffic.md
