@@ -12,27 +12,35 @@ from, and repeat runs should be fast.
 
 ## Decision
 
-One workflow, `ci.yaml`, three jobs:
+One workflow, `ci.yaml`, four jobs:
 
 | Job (check name) | Runs on | What it does |
 |---|---|---|
 | `lint-test` (**Lint, type-check, test**) | PR, push to main | `uv sync --locked` (fails if `uv.lock` is stale), ruff, ruff format, mypy, pytest with coverage (fails under 80%) |
-| `security` (**Secret, dependency and Dockerfile scans**) | PR, push to main | gitleaks over the full git history, hadolint on `Dockerfile`, pip-audit on the locked runtime dependencies |
-| `image` (**Image build, scan, publish**) | PR, push to main; needs both jobs above | buildx build (GHA layer cache) → Trivy gate → Trivy SARIF → *(push to main only)* push, SBOM, provenance, attestation |
+| `security` (**Secret, dependency and Dockerfile scans**) | PR, push to main | gitleaks over the full git history, hadolint on `Dockerfile`, pip-audit (itself installed from a hash-locked file) on the locked runtime dependencies |
+| `image` (**Image build and scan**) | PR, push to main; needs both jobs above | buildx build (GHA layer cache) → Trivy gate → Trivy SARIF (non-blocking). Token: `contents: read`, `security-events: write` only |
+| `publish` (**Publish to GHCR**) | push to main only, `release` environment; needs `image` | push by digest (untagged) → Trivy gate on **that exact digest** with a fresh DB → tag `sha-<commit>` → move `main` if still the head → signed attestation |
 
-### Single workflow, gate before push in the same job
+### Publishing is a separate job that re-scans what it pushes
 
-The image that is scanned and the image that is pushed are produced by the same buildx builder in the same job, from
-the same context, build args and labels. The push build is a full cache hit, so the pushed layers are the layers Trivy
-scanned; only the attestation manifests are new. Publishing is the last step of the job, so a failing Trivy gate ends
-the job before any registry login happens. A separate publish job would need the image passed between jobs (a tarball
-loses the attestations) or a rebuild on a different runner, which breaks the "what was scanned is what ships" link.
+PR runs never hold a token that can write packages or sign: only `publish` has `packages: write`, `id-token: write`
+and `attestations: write`, and it only runs for pushes to `main` through the `release` environment (deployment branch
+policy: `main`). PR code (tests, the Dockerfile's `RUN` steps, scanners) therefore never runs next to publishing
+credentials.
 
-Trade-off: the `image` job declares `packages: write`, `id-token: write` and `attestations: write` on PR runs too, even
-though the publish steps only run on `push` to `main` (job permissions cannot depend on the event). Mitigations: PRs
-from forks always receive a read-only token; only collaborators can open same-repo PRs; the token is never exposed to a
-`run:` step or to the Docker build (checkout uses `persist-credentials: false`, the build gets no secrets), only to
-SHA-pinned actions as their default `github-token`; CODEOWNERS covers `.github/`.
+The publish build reuses the layer cache, but it is still a build, so we do not assume it equals the image `image`
+scanned. It is pushed **by digest only** (no tag), then Trivy scans that pushed digest from the registry with a freshly
+downloaded DB. Only if that passes does the digest get the `sha-<commit>` tag. A CRITICAL therefore leaves at most an
+untagged manifest in GHCR, never a tagged image.
+
+The runtime stage is built with `no-cache-filters: runtime`, because the Dockerfile applies an unpinned Debian
+security upgrade there; a cached copy would freeze that fix forever.
+
+Remaining risk, stated plainly: GitHub grants token permissions from the workflow file of the ref being run, so a
+collaborator with write access could push a branch whose own workflow asks for `packages: write` and pushes an image
+before review. Branch rules and CODEOWNERS only gate the merge, not that run. Collaborators are therefore trusted, and
+consumers should verify attestations with `--signer-workflow` and `--source-ref refs/heads/main` (below), which a
+branch run cannot satisfy.
 
 ### What blocks what
 
@@ -40,8 +48,9 @@ SHA-pinned actions as their default `github-token`; CODEOWNERS covers `.github/`
   exception must be a reviewed `.trivyignore` entry.
 - `HIGH` and `MEDIUM` are uploaded as SARIF to code scanning (Security tab, PR annotations) and do not block. The
   report step also runs when the gate failed, so the blocking findings are visible there too.
-- `image` needs `lint-test` and `security`: a commit with a leaked secret or a vulnerable locked dependency is never
-  built for publishing.
+- `image` needs `lint-test` and `security`, and `publish` needs `image`: a commit with a leaked secret or a vulnerable
+  locked dependency is never published.
+- The SARIF report and upload steps are `continue-on-error`: a code-scanning outage cannot block publishing.
 
 ### Supply chain of the pipeline itself
 
@@ -54,24 +63,25 @@ SHA-pinned actions as their default `github-token`; CODEOWNERS covers `.github/`
 - Pins are the newest release that was at least 14 days old when chosen; Dependabot uses a 7-day cooldown.
 - `permissions: {}` at the top, least privilege per job, no `pull_request_target`, `step-security/harden-runner`
   (egress audit) first in every job, `persist-credentials: false` on checkout.
-- On publishing runs the Trivy DB is always downloaded fresh, never restored from the Actions cache.
+- The publish gate always downloads a fresh Trivy DB; the cached DB only speeds up the `image` job.
 - `actionlint` and `zizmor` (auditor persona) pass on the workflow.
 
 ### Speed on repeat runs
 
 uv download cache (keyed on `uv.lock`), Docker layer cache in the GitHub Actions cache (`type=gha,mode=max`, the
-Dockerfile installs dependencies before copying code), Trivy DB cached per day on PR runs, lint/test and security
+Dockerfile installs dependencies before copying code), Trivy DB cached per day for the `image` job, lint/test and security
 jobs in parallel, superseded PR runs cancelled.
 
 ## Tags and tracing an image to its commit
 
 | Tag | Meaning |
 |---|---|
-| `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:sha-<40-char commit SHA>` | Immutable, one per commit on `main`. Deploy this (or the digest). |
+| `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:sha-<40-char commit SHA>` | One per commit on `main`, never overwritten: a re-run finds the existing tag and reuses its digest instead of building a new one. Deploy this, or better the digest. |
 | `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:main` | Moving pointer to the latest published commit. |
 
-Concurrency on `main` is one group per commit, so every merged commit gets its own image; if two merges finish out
-of order, `:main` can briefly point at the older one. The `sha-` tags are never affected.
+Every merged commit gets its own `sha-` image. Publish runs are serialised (`concurrency: publish-ghcr`, never
+cancelled), and `:main` is only moved when the commit being published is still the head of `main`, so a run that
+finishes late can never roll `:main` back to an older commit.
 
 Four independent ways to get from an image to its commit:
 
@@ -88,16 +98,21 @@ docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revis
 # 3. SLSA provenance stored with the image by buildx (mode=max: commit, workflow, build args)
 docker buildx imagetools inspect "$IMAGE:main" --format '{{ json .Provenance }}'
 
-# 4. Signed GitHub attestation: proves this repo's workflow built this digest from this commit
-gh attestation verify "oci://$IMAGE:main" --owner ashish-sharma-edstem-dev
+# 4. Signed GitHub attestation: proves ci.yaml on main in this repo built this digest from this commit
+gh attestation verify "oci://$IMAGE:main" --repo ashish-sharma-edstem-dev/tdb-devops-handson \
+  --signer-workflow ashish-sharma-edstem-dev/tdb-devops-handson/.github/workflows/ci.yaml \
+  --source-ref refs/heads/main
 ```
 
 The run's job summary prints the image digest, tags, commit and the verify commands.
 
 ## Not covered
 
-- Tool versions inside `ci.yaml` (uv, gitleaks, hadolint, Trivy, pip-audit) are not updated by Dependabot; bump them by
-  hand with the hash from the release checksums file.
+- Tool versions inside `ci.yaml` (uv, gitleaks, hadolint, Trivy) and `.github/tools/pip-audit.txt` are not updated by
+  Dependabot; bump them by hand (release checksums file / `uv pip compile --generate-hashes`).
+- `harden-runner` is in `audit` mode (logs egress, blocks nothing). Switching to `block` needs an allow-list built
+  from a few runs' egress reports.
+- A CRITICAL found by the publish gate leaves an untagged manifest in GHCR; delete it from the package page.
 - `linux/amd64` only. Adding `linux/arm64` needs QEMU or an arm runner and roughly doubles build time.
 - GHCR package visibility: the first push creates the package; if it is private, make it public once in the package
   settings (repository setting, not automatable from the workflow without a broader token).

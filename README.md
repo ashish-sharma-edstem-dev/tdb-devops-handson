@@ -86,18 +86,21 @@ docker inspect --format '{{.Config.User}} {{.State.Health.Status}}' <container> 
 |---|---|
 | `Lint, type-check, test` | `uv sync --locked` (a stale lock fails), ruff, ruff format, mypy `--strict`, pytest with coverage ≥ 80% |
 | `Secret, dependency and Dockerfile scans` | gitleaks over full history, pip-audit on the locked runtime deps, hadolint |
-| `Image build, scan, publish` | buildx build with the GitHub Actions layer cache, then a Trivy gate: **any CRITICAL (fixed or not) fails the job**. On `main` only, the same job then pushes to GHCR with SBOM, provenance and a signed attestation |
+| `Image build and scan` | buildx build with the GitHub Actions layer cache, then a Trivy gate: **any CRITICAL (fixed or not) fails the job**. Read-only token |
+| `Publish to GHCR` (main only) | Pushes by digest, **re-scans that exact digest** with a fresh Trivy DB, and only then tags it `sha-<commit>`; moves `main` only if the commit is still the head of `main`; SBOM, provenance and a signed attestation |
 
-Published image: `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson`, tags `sha-<full commit sha>` (immutable) and
-`main`. To trace an image back to its commit:
+Published image: `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson`, tags `sha-<full commit sha>` (one per commit,
+never overwritten) and `main`. To trace an image back to its commit:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:main \
   --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}'
 gh attestation verify oci://ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:sha-<commit> \
-  --owner ashish-sharma-edstem-dev
+  --repo ashish-sharma-edstem-dev/tdb-devops-handson \
+  --signer-workflow ashish-sharma-edstem-dev/tdb-devops-handson/.github/workflows/ci.yaml --source-ref refs/heads/main
 ```
 
-Hardening: every action pinned to a commit SHA, least-privilege `permissions:` per job, no `pull_request_target`,
+Hardening: only the main-only `publish` job (in the `release` environment) can write packages or sign; every action
+pinned to a commit SHA, least-privilege `permissions:` per job, no `pull_request_target`, pip-audit from a hash lock,
 scanners installed as checksum-verified binaries (the `trivy-action` tags were hijacked in March 2026), Dependabot
 for actions, uv and base images. Details: [`docs/adr/0002-ci-pipeline.md`](docs/adr/0002-ci-pipeline.md).
