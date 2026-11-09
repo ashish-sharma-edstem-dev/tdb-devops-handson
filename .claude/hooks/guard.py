@@ -6,8 +6,9 @@ It is the second line of defence after the permission rules in .claude/settings.
 permission rules match command prefixes, this inspects the whole command
 (chained commands, flags in any position, pipes).
 
-Contract (Claude Code hooks): JSON on stdin, exit 0 = allow,
-exit 2 = block, and stderr is shown to the agent as the reason.
+Contract (Claude Code hooks): JSON on stdin. Exit 0 = allow; exit 2 = block, stderr shown to the
+agent as the reason; exit 0 with a `permissionDecision: "ask"` JSON on stdout = ask the human first
+(used for guardrail files such as CI workflows that agents may change only with approval).
 Standard library only, so it runs anywhere python3 exists.
 """
 
@@ -111,10 +112,87 @@ READERS = _rx(r"^(cat|less|more|head|tail|bat|nl|strings|xxd|od|grep|rg|sed|awk|
 
 SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
+# Guardrail files. An agent must never change its own controls (DENY); CI, pre-commit and Dependabot
+# config are legitimate work but every change needs a human's yes (ASK). Covers the file tools and
+# shell writes (redirects, sed -i, tee, cp/mv/install destinations, rm, truncate, chmod, ln).
+DENY_WRITE_PATHS: tuple[re.Pattern[str], ...] = (
+    _rx(r"(^|/)\.claude/settings(\.local)?\.json$"),
+    _rx(r"(^|/)\.claude/hooks(/|$)"),
+    _rx(r"(^|/)\.github/CODEOWNERS$"),
+)
+ASK_WRITE_PATHS: tuple[re.Pattern[str], ...] = (
+    _rx(r"(^|/)\.github/workflows(/|$)"),
+    _rx(r"(^|/)\.pre-commit-config\.yaml$"),
+    _rx(r"(^|/)\.github/dependabot\.ya?ml$"),
+)
+REDIRECT_TARGET = re.compile(r"(?:^|[^<>&0-9])\d?>>?\|?\s*([^\s;&|<>]+)")
+# Commands whose path arguments are written, moved or deleted; value = which arguments count.
+WRITERS: dict[str, str] = {
+    "tee": "all", "rm": "all", "truncate": "all", "chmod": "all", "chown": "all", "mv": "all",
+    "ln": "last", "cp": "last", "install": "last", "rsync": "last",
+}  # fmt: skip
+INPLACE = re.compile(r"^(sed|gsed)\b.*\s-(i|-in-place)|^perl\b.*\s-\w*i")
+
 
 def is_secret_path(path: str) -> bool:
     clean = str(PurePath(path))
     return any(p.search(clean) for p in SECRET_PATHS)
+
+
+def guardrail_level(path: str) -> str | None:
+    """Return "deny" or "ask" if writing `path` touches a guardrail file, else None."""
+    clean = str(PurePath(path))
+    if any(p.search(clean) for p in DENY_WRITE_PATHS):
+        return "deny"
+    if any(p.search(clean) for p in ASK_WRITE_PATHS):
+        return "ask"
+    return None
+
+
+def _written_paths(part: str) -> list[str]:
+    """Paths a single (already split) shell command writes to."""
+    paths = REDIRECT_TARGET.findall(part)
+    try:
+        tokens = shlex.split(part)
+    except ValueError:
+        tokens = part.split()
+    if not tokens:
+        return paths
+    args = [t for t in tokens[1:] if not t.startswith("-")]
+    mode = WRITERS.get(PurePath(tokens[0]).name)
+    if mode == "all" or INPLACE.search(part):
+        paths += args
+    elif mode == "last" and args:
+        paths.append(args[-1])
+    return paths
+
+
+# An interpreter can write any file without shell syntax we could parse (`python -c`, heredocs).
+INTERPRETER = re.compile(
+    r"(^|[\s;&|(])(python\d?(\.\d+)?|perl|ruby|node|deno|bun|php|(ba|z|da)?sh\s+-c)\b"
+)
+PATH_TOKEN = re.compile(r"[\w./-]*\.(?:claude|github|pre-commit-config)[\w./-]*")
+
+
+def check_guardrail_write(command: str) -> tuple[str, str] | None:
+    """("deny"|"ask", reason) if a shell command writes a guardrail file, else None."""
+    if INTERPRETER.search(command):
+        # Conservative: any guardrail path mentioned next to an interpreter counts as a write.
+        levels = {(guardrail_level(t), t) for t in PATH_TOKEN.findall(command)}
+        for level, path in sorted(levels, key=lambda lp: lp[0] != "deny"):
+            if level == "deny":
+                return ("deny", f"interpreter touching a guardrail file ({path}) is human-only")
+            if level == "ask":
+                return ("ask", f"interpreter touching a guardrail file ({path}); needs approval")
+    worst: tuple[str, str] | None = None
+    for raw in SPLIT.split(command):
+        for path in _written_paths(_strip_wrappers(raw)):
+            level = guardrail_level(path)
+            if level == "deny":
+                return ("deny", f"writing a guardrail file ({path}) is human-only")
+            if level == "ask" and worst is None:
+                worst = ("ask", f"changes a guardrail file ({path}); needs a human's approval")
+    return worst
 
 
 def _strip_wrappers(cmd: str) -> str:
@@ -175,6 +253,7 @@ def check_command(command: str, kube_context: str | None = None) -> str | None:
 
 
 def check(event: dict[str, object]) -> str | None:
+    """Return a block reason, or None. See `decide` for ask-level guardrail edits."""
     tool = event.get("tool_name")
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -189,6 +268,28 @@ def check(event: dict[str, object]) -> str | None:
     return None
 
 
+def decide(event: dict[str, object]) -> tuple[str, str] | None:
+    """("deny"|"ask", reason) for this tool call, or None to allow it."""
+    reason = check(event)
+    if reason:
+        return ("deny", reason)
+    tool = event.get("tool_name")
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    if tool == "Bash":
+        command = tool_input.get("command")
+        return check_guardrail_write(command) if isinstance(command, str) else None
+    if tool in {"Edit", "Write", "MultiEdit", "NotebookEdit"}:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        level = guardrail_level(path) if isinstance(path, str) else None
+        if level == "deny":
+            return ("deny", f"{tool} of a guardrail file ({path}) is human-only")
+        if level == "ask":
+            return ("ask", f"{tool} changes a guardrail file ({path}); needs a human's approval")
+    return None
+
+
 def main() -> int:
     try:
         event = json.load(sys.stdin)
@@ -196,11 +297,26 @@ def main() -> int:
         # Fail closed: a malformed event is not silently allowed.
         print("agent-guard: could not parse hook input; blocking", file=sys.stderr)
         return 2
-    reason = check(event)
-    if reason:
-        print(f"agent-guard: blocked: {reason}. See AGENTS.md > Agent safety.", file=sys.stderr)
+    if not isinstance(event, dict):
+        print("agent-guard: hook input is not an object; blocking", file=sys.stderr)
         return 2
-    return 0
+    verdict = decide(event)
+    if verdict is None:
+        return 0
+    level, reason = verdict
+    if level == "ask":
+        # Claude Code shows the human a confirmation prompt instead of running the call silently.
+        decision = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "ask",
+                "permissionDecisionReason": f"agent-guard: {reason}",
+            }
+        }
+        print(json.dumps(decision))
+        return 0
+    print(f"agent-guard: blocked: {reason}. See AGENTS.md > Agent safety.", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

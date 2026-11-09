@@ -105,11 +105,11 @@ jobs:
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$bin" gitleaks
-          curl -sSfL --retry 3 -o "$bin/hadolint" \
+          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$bin/hadolint" \
             "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
           echo "${HADOLINT_SHA256}  $bin/hadolint" | sha256sum --check --strict
           chmod +x "$bin/hadolint"
@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" \
+          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/trivy.tar.gz" \
             "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy
@@ -384,7 +384,7 @@ jobs:
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" \
+          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/trivy.tar.gz" \
             "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy

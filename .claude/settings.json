@@ -32,6 +32,12 @@
       "Edit(./.claude/settings.json)",
       "Edit(./.claude/hooks/**)",
       "Edit(./.github/CODEOWNERS)",
+      "Write(./.env)",
+      "Write(./.claude/settings.json)",
+      "Write(./.claude/settings.local.json)",
+      "Edit(./.claude/settings.local.json)",
+      "Write(./.claude/hooks/**)",
+      "Write(./.github/CODEOWNERS)",
       "WebFetch"
     ],
     "ask": [
@@ -41,7 +47,13 @@
       "Bash(uv add:*)",
       "Bash(brew install:*)",
       "Bash(docker system prune:*)",
-      "Bash(kind delete:*)"
+      "Bash(kind delete:*)",
+      "Edit(./.github/workflows/**)",
+      "Write(./.github/workflows/**)",
+      "Edit(./.pre-commit-config.yaml)",
+      "Write(./.pre-commit-config.yaml)",
+      "Edit(./.github/dependabot.yml)",
+      "Write(./.github/dependabot.yml)"
     ],
     "allow": [
       "Bash(uv sync:*)",
