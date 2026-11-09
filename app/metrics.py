@@ -24,20 +24,40 @@ METRICS_PATH: Final = "/metrics"
 # create unbounded label values (one series per scanned URL).
 UNMATCHED_ROUTE: Final = "unmatched"
 
+# HTTP methods recorded as-is; anything else (e.g. a scanner sending "FOO") becomes OTHER, so
+# clients cannot create unbounded method label values.
+KNOWN_METHODS: Final = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+OTHER_METHOD: Final = "OTHER"
+
+# Booking series created at startup with zero values, so an idle fresh deploy already exports them
+# and the alert rules can tell "no booking traffic yet" from "booking metrics missing".
+PREINITIALISED_SERIES: Final = (
+    ("GET", "/bookings", "2xx"),
+    ("GET", "/bookings", "5xx"),
+)
+
 # 1.0 must be an exact bucket boundary: the SLO threshold is read from the le="1.0" bucket.
 # 0.75 and 2.5 around it show how close requests are to the threshold.
 DURATION_BUCKETS: Final = (0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0)
 
 
 def new_request_histogram(registry: CollectorRegistry) -> Histogram:
-    """Create the request duration histogram in ``registry``."""
-    return Histogram(
+    """Create the request histogram in ``registry``, with the booking series pre-created."""
+    histogram = Histogram(
         "http_request_duration_seconds",
         "Time from receiving an HTTP request to sending the last byte of the response.",
         labelnames=("method", "route", "status_class"),
         buckets=DURATION_BUCKETS,
         registry=registry,
     )
+    for method, route, status in PREINITIALISED_SERIES:
+        histogram.labels(method=method, route=route, status_class=status)
+    return histogram
+
+
+def method_label(method: str) -> str:
+    """Return ``method`` if it is a standard HTTP method, otherwise ``"OTHER"``."""
+    return method if method in KNOWN_METHODS else OTHER_METHOD
 
 
 def status_class(status_code: int) -> str:
@@ -53,6 +73,9 @@ def route_template(scope: Scope) -> str:
 
 class PrometheusMiddleware:
     """Pure ASGI middleware that observes every HTTP request in ``histogram``.
+
+    The duration covers the whole ASGI call, so it would include background tasks run after the
+    response is sent; the app has none today. If one is added, it will count against the 1 s SLI.
 
     It sits outside FastAPI's exception handling, so an exception that escapes the app is still
     observed (as 5xx, which is what the server error middleware will answer) and then re-raised.
@@ -86,7 +109,7 @@ class PrometheusMiddleware:
         finally:
             # The router fills scope["route"] in place, so it is known once the app has run.
             self.histogram.labels(
-                method=scope["method"],
+                method=method_label(scope["method"]),
                 route=route_template(scope),
                 status_class=status_class(status_code),
             ).observe(time.perf_counter() - start)

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from prometheus_client import CollectorRegistry
 
 from app.main import create_app
-from app.metrics import status_class
+from app.metrics import method_label, status_class
 
 METRIC = "http_request_duration_seconds"
 
@@ -98,6 +98,33 @@ def test_each_app_has_its_own_registry() -> None:
     labels = {"method": "GET", "route": "/bookings", "status_class": "2xx"}
     assert sample(first, "_count", **labels) == 1
     assert sample(second, "_count", **labels) == 0
+
+
+def test_booking_series_exist_before_any_request(app: FastAPI) -> None:
+    registry: CollectorRegistry = app.state.metrics_registry
+    for status in ("2xx", "5xx"):
+        labels = {"method": "GET", "route": "/bookings", "status_class": status}
+        assert registry.get_sample_value(f"{METRIC}_count", labels) == 0
+        assert registry.get_sample_value(f"{METRIC}_bucket", {"le": "1.0", **labels}) == 0
+
+
+def test_booking_series_are_exported_before_any_request(client: TestClient) -> None:
+    body = client.get("/metrics").text
+
+    assert f'{METRIC}_count{{method="GET",route="/bookings",status_class="2xx"}} 0.0' in body
+    assert f'{METRIC}_count{{method="GET",route="/bookings",status_class="5xx"}} 0.0' in body
+
+
+def test_unknown_method_is_recorded_as_other(app: FastAPI, client: TestClient) -> None:
+    client.request("FOO", "/bookings")
+
+    assert sample(app, "_count", method="OTHER", route="/bookings", status_class="4xx") == 1
+    assert 'method="FOO"' not in client.get("/metrics").text
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def test_known_methods_are_kept(method: str) -> None:
+    assert method_label(method) == method
 
 
 @pytest.mark.parametrize(
