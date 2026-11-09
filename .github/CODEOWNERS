@@ -1,0 +1,7 @@
+# Every path needs review from the repository owner. Agent guardrails and CI are
+# listed explicitly so a change to them is always visible in review.
+*                       @ashish-sharma-edstem-dev
+/.claude/               @ashish-sharma-edstem-dev
+/.github/               @ashish-sharma-edstem-dev
+/infra/                 @ashish-sharma-edstem-dev
+/AGENTS.md              @ashish-sharma-edstem-dev

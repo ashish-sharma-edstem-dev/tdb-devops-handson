@@ -1,0 +1,31 @@
+# Local gate before anything leaves the machine: `uvx pre-commit install`.
+# CI runs the same checks, so skipping these locally only delays the failure.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^charts/.*/templates/
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: no-commit-to-branch
+        args: [--branch, main]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+      - id: ruff-format
+        args: [--check]

@@ -1,0 +1,51 @@
+[project]
+name = "tdb-bookings"
+version = "0.1.0"
+description = "Minimal bookings web service for the TDB DevOps hands-on exercise."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic-settings>=2.6",
+    "uvicorn>=0.32",
+]
+
+[project.scripts]
+tdb-bookings = "app.main:run"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "N", "SIM", "RUF"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+# Any other warning fails the run. Starlette's TestClient warns about httpx; it still works.
+filterwarnings = [
+    "error",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
