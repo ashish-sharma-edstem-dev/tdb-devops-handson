@@ -44,12 +44,15 @@ jobs:
           version: ${{ env.HELM_VERSION }}
 
       - name: Install kubeconform (checksum verified)
+        # Authenticated download (job token, read-only): GitHub rate-limits and times out anonymous
+        # release downloads. The pinned SHA-256 below still decides whether the file is used.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
-          curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "${tmp}/kubeconform-linux-amd64.tar.gz" "${base}/kubeconform-linux-amd64.tar.gz"
-          curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "${tmp}/CHECKSUMS" "${base}/CHECKSUMS"
+          gh release download "${KUBECONFORM_VERSION}" -R yannh/kubeconform \
+            -p kubeconform-linux-amd64.tar.gz -p CHECKSUMS -D "${tmp}"
           # The pinned hash must match both the download and the release's own CHECKSUMS file.
           grep -qx "${KUBECONFORM_SHA256}  kubeconform-linux-amd64.tar.gz" "${tmp}/CHECKSUMS"
           echo "${KUBECONFORM_SHA256}  ${tmp}/kubeconform-linux-amd64.tar.gz" | sha256sum --check --strict

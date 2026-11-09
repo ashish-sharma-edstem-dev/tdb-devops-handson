@@ -101,16 +101,19 @@ jobs:
           persist-credentials: false
 
       - name: Install gitleaks and hadolint (pinned, checksum-verified)
+        # Authenticated download (job token, read-only): GitHub rate-limits and times out anonymous
+        # release downloads. The pinned SHA-256 below still decides whether the file is used.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          gh release download "v${GITLEAKS_VERSION}" -R gitleaks/gitleaks \
+            -p "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O "$RUNNER_TEMP/gitleaks.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$bin" gitleaks
-          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$bin/hadolint" \
-            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          gh release download "v${HADOLINT_VERSION}" -R hadolint/hadolint -p hadolint-linux-x86_64 -O "$bin/hadolint"
           echo "${HADOLINT_SHA256}  $bin/hadolint" | sha256sum --check --strict
           chmod +x "$bin/hadolint"
           echo "$bin" >> "$GITHUB_PATH"
@@ -209,12 +212,16 @@ jobs:
           sbom: false
 
       - name: Install Trivy (pinned, checksum-verified)
+        # Authenticated download (job token, read-only): GitHub rate-limits and times out anonymous
+        # release downloads. The pinned SHA-256 below still decides whether the file is used.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/trivy.tar.gz" \
-            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          gh release download "v${TRIVY_VERSION}" -R aquasecurity/trivy \
+            -p "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -O "$RUNNER_TEMP/trivy.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy
           echo "$bin" >> "$GITHUB_PATH"
@@ -380,12 +387,16 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Install Trivy (pinned, checksum-verified)
+        # Authenticated download (job token, read-only): GitHub rate-limits and times out anonymous
+        # release downloads. The pinned SHA-256 below still decides whether the file is used.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/bin"
           mkdir -p "$bin"
-          curl -sSfL --retry 6 --retry-delay 10 --retry-all-errors --connect-timeout 20 --max-time 180 -o "$RUNNER_TEMP/trivy.tar.gz" \
-            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          gh release download "v${TRIVY_VERSION}" -R aquasecurity/trivy \
+            -p "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -O "$RUNNER_TEMP/trivy.tar.gz"
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$bin" trivy
           echo "$bin" >> "$GITHUB_PATH"
