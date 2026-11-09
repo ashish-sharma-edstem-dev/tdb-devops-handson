@@ -1,0 +1,61 @@
+# Weekly update PRs for everything this repo pins. Each ecosystem's updates arrive as one grouped PR
+# so CI runs once per week per ecosystem; security updates are not grouped and arrive as soon as
+# an advisory is published. The cooldown skips releases younger than 7 days (supply-chain buffer:
+# a compromised release is usually caught and yanked within days).
+#
+# Not covered (no Dependabot support): tool versions + SHA-256 pins inside .github/workflows/ci.yaml
+# (gitleaks, hadolint, trivy, pip-audit, uv). Bump those by hand, hash from the release checksums file.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    groups:
+      python-runtime:
+        dependency-type: production
+      python-dev:
+        dependency-type: development
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 7
+    # Tracks both FROM images in the root Dockerfile: python:3.13.x-slim and ghcr.io/astral-sh/uv
+    # (tag + digest). The service requires Python <3.14 (pyproject.toml), so never propose 3.14+.
+    ignore:
+      - dependency-name: "python"
+        versions: [">=3.14"]
+    groups:
+      docker-base-images:
+        patterns: ["*"]
+    commit-message:
+      prefix: "docker"

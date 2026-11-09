@@ -77,3 +77,30 @@ docker inspect --format '{{.Config.User}} {{.State.Health.Status}}' <container> 
 - `HEALTHCHECK` uses the image's own Python, so no curl is added.
 - The same image runs everywhere: `PORT`, `APP_ENV`, `DATABASE_URL`, … come from the environment at run time.
 - Why this base image: [`docs/adr/0001-container-base-image.md`](docs/adr/0001-container-base-image.md).
+
+## P2: CI pipeline
+
+[`.github/workflows/ci.yaml`](.github/workflows/ci.yaml) runs on every PR and on every push to `main`:
+
+| Check | What it does |
+|---|---|
+| `Lint, type-check, test` | `uv sync --locked` (a stale lock fails), ruff, ruff format, mypy `--strict`, pytest with coverage ≥ 80% |
+| `Secret, dependency and Dockerfile scans` | gitleaks over full history, pip-audit on the locked runtime deps, hadolint |
+| `Image build and scan` | buildx build with the GitHub Actions layer cache, then a Trivy gate: **any CRITICAL (fixed or not) fails the job**. Read-only token |
+| `Publish to GHCR` (main only) | Pushes by digest, **re-scans that exact digest** with a fresh Trivy DB, and only then tags it `sha-<commit>`; moves `main` only if the commit is still the head of `main`; SBOM, provenance and a signed attestation |
+
+Published image: `ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson`, tags `sha-<full commit sha>` (one per commit,
+never overwritten) and `main`. To trace an image back to its commit:
+
+```bash
+docker buildx imagetools inspect ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:main \
+  --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}'
+gh attestation verify oci://ghcr.io/ashish-sharma-edstem-dev/tdb-devops-handson:sha-<commit> \
+  --repo ashish-sharma-edstem-dev/tdb-devops-handson \
+  --signer-workflow ashish-sharma-edstem-dev/tdb-devops-handson/.github/workflows/ci.yaml --source-ref refs/heads/main
+```
+
+Hardening: only the main-only `publish` job (in the `release` environment) can write packages or sign; every action
+pinned to a commit SHA, least-privilege `permissions:` per job, no `pull_request_target`, pip-audit from a hash lock,
+scanners installed as checksum-verified binaries (the `trivy-action` tags were hijacked in March 2026), Dependabot
+for actions, uv and base images. Details: [`docs/adr/0002-ci-pipeline.md`](docs/adr/0002-ci-pipeline.md).
