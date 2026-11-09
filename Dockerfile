@@ -45,7 +45,11 @@ FROM python:3.13.18-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf
 #    Delete this step once the base digest carries the fix (Trivy will show it as gone).
 # 2. Remove pip and ensurepip. Dependencies are installed by uv in the builder; an installer has
 #    no job at run time, and pip's vendored urllib3/msgpack/setuptools carry 5 HIGH CVEs.
-# 3. Unprivileged system user with a fixed numeric UID/GID, no home directory, no login shell.
+#    The `! python -c "import pip"` check fails the build if a base-image layout change ever
+#    makes the rm a silent no-op.
+# 3. Strip setuid/setgid bits (su, passwd, mount, ...): nothing in the image may gain privileges,
+#    even where a runtime forgets --cap-drop / no-new-privileges.
+# 4. Unprivileged system user with a fixed numeric UID/GID, no home directory, no login shell.
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends --only-upgrade zlib1g \
@@ -54,6 +58,8 @@ RUN apt-get update \
               /usr/local/lib/python3.13/site-packages/pip-*.dist-info \
               /usr/local/lib/python3.13/ensurepip \
               /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
+    && ! python -c "import pip" 2>/dev/null \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
 
@@ -74,9 +80,10 @@ USER 10001:10001
 EXPOSE 8080
 
 # Uses the image's own Python, so no curl/wget is added. Exec form: no shell needed.
+# ProxyHandler({}) ignores HTTP_PROXY/http_proxy: a local probe must never go through a proxy.
 # Kubernetes ignores HEALTHCHECK and uses its own probes (Helm chart).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import os, urllib.request as r; r.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT', '8080'), timeout=2)"]
+    CMD ["python", "-c", "import os, urllib.request as r; r.build_opener(r.ProxyHandler({})).open('http://127.0.0.1:%s/health' % os.environ.get('PORT', '8080'), timeout=2)"]
 
 # Exec form: Python is PID 1 and receives SIGTERM directly for a graceful uvicorn shutdown.
 CMD ["python", "-m", "app.main"]
