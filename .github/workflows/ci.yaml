@@ -5,7 +5,8 @@
 #
 # Supply chain: every third-party action is pinned to a full commit SHA (tag in the comment for
 # humans and Dependabot); downloaded tools are pinned by version and verified against a
-# hard-coded SHA-256. Versions follow a 14-day cooldown: the newest release at least two weeks old.
+# hard-coded SHA-256. Each pin was the newest release at least 14 days old when chosen
+# (supply-chain cooldown); Dependabot keeps a 7-day cooldown for later bumps.
 name: CI
 
 on:
@@ -230,8 +231,12 @@ jobs:
           echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
           echo "TRIVY_DB_DAY=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
 
-      - name: Cache Trivy vulnerability DB (refreshed daily)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Cache Trivy vulnerability DB (refreshed daily; PR runs only)
+        # The DB decides whether the gate passes, so a publishing run always downloads a fresh one
+        # instead of trusting a cached copy (no cache-poisoning path into the publish gate). zizmor
+        # cannot see this `if:`, hence the inline ignore below.
+        if: ${{ env.PUBLISH != 'true' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # zizmor: ignore[cache-poisoning]
         with:
           path: ${{ env.TRIVY_CACHE_DIR }}
           key: trivy-db-${{ env.TRIVY_DB_DAY }}
