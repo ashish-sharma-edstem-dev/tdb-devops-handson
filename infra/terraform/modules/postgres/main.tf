@@ -185,6 +185,13 @@ data "aws_iam_policy_document" "monitoring_assume" {
       variable = "aws:SourceAccount"
       values   = [local.account_id]
     }
+
+    # Only this DB instance's monitoring may assume the role (confused-deputy protection).
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${local.partition}:rds:${local.region}:${local.account_id}:db:${var.name}"]
+    }
   }
 }
 
