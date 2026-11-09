@@ -174,8 +174,10 @@ groups:
 
       - alert: BookingsMetricsAbsent
         # Without data every ratio above is empty and no burn alert can fire, so silence must page.
+        # absent() of a comparison carries no labels, so job is added back: both branches then
+        # produce the same series and `or` collapses them into one alert.
         expr: |
-          absent(up{job="tdb-bookings"} == 1)
+          label_replace(absent(up{job="tdb-bookings"} == 1), "job", "tdb-bookings", "", "")
           or
           absent(http_request_duration_seconds_count{job="tdb-bookings"})
         for: 10m
