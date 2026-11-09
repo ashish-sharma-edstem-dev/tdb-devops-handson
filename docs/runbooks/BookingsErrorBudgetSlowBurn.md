@@ -34,6 +34,8 @@ histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_
 1 - slo:bookings_request_errors:ratio_rate30d / 0.001
 ```
 
+Set `NS=tdb-prod` (or `tdb-dev`; Helm release `tdb-bookings`) for the commands below.
+
 1. Errors or latency? Split as in step 1 of the fast-burn runbook.
 2. When did it start? Graph `slo:bookings_request_errors:ratio_rate1h` over the last 7 days and line it up with
    `helm history tdb-bookings -n "$NS"`.

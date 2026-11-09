@@ -43,7 +43,7 @@ these in order. Steps 1–3 take a couple of minutes and decide which branch of 
 Set these first (the names come from the Helm release and Terraform environment):
 
 ```sh
-NS=tdb-bookings                       # Kubernetes namespace of the release
+NS=tdb-prod                           # Helm namespace: tdb-prod (production) or tdb-dev; release tdb-bookings
 APP=app.kubernetes.io/name=tdb-bookings
 DB_ID=tdb-bookings-prod               # RDS instance identifier (Terraform output)
 ```
@@ -59,7 +59,11 @@ slo:bookings_request_errors:ratio_rate5m
 Share of requests that are **5xx**:
 
 ```promql
-sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class="5xx"}[5m]))
+(
+  sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class="5xx"}[5m]))
+  or
+  0 * sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+)
 /
 sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
 ```
@@ -68,15 +72,24 @@ Share of requests that **did not fail but took longer than 1 s**:
 
 ```promql
 (
-  sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class!="5xx"}[5m]))
+  (
+    sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class!="5xx"}[5m]))
+    or
+    0 * sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+  )
   -
-  sum(rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", status_class!="5xx", le="1.0"}[5m]))
+  (
+    sum(rate(http_request_duration_seconds_bucket{job="tdb-bookings", route=~"/bookings(/.*)?", status_class!="5xx", le="1.0"}[5m]))
+    or
+    0 * sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+  )
 )
 /
 sum(rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
 ```
 
-The two add up to the SLI. Whichever is larger is your problem.
+The two add up to the SLI. Whichever is larger is your problem. Each numerator is zero-filled
+(`or 0 * total`), so a share with no matching series shows `0` instead of an empty result.
 
 ### 2. Where is it?
 
@@ -96,7 +109,11 @@ histogram_quantile(0.50, sum by (le, route) (rate(http_request_duration_seconds_
 Is it one pod or all of them? (One bad pod = node or pod problem; all pods = release, dependency or load.)
 
 ```promql
-sum by (instance) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class="5xx"}[5m]))
+(
+  sum by (instance) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?", status_class="5xx"}[5m]))
+  or on (instance)
+  0 * sum by (instance) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
+)
 /
 sum by (instance) (rate(http_request_duration_seconds_count{job="tdb-bookings", route=~"/bookings(/.*)?"}[5m]))
 ```

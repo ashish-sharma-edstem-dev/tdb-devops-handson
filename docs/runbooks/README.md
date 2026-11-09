@@ -12,8 +12,34 @@ requests.
 | `BookingsErrorBudgetFastBurn` | page | burn rate ≥ 14.4× over 1 h and 5 min, or ≥ 6× over 6 h and 30 min | [full](BookingsErrorBudgetFastBurn.md) |
 | `BookingsErrorBudgetSlowBurn` | ticket | burn rate ≥ 3× over 1 d and 2 h, or ≥ 1× over 3 d and 6 h | [short](BookingsErrorBudgetSlowBurn.md) |
 | `BookingsErrorBudgetLow` | ticket | more than 75% of the 30-day budget spent | [short](BookingsErrorBudgetLow.md) |
-| `BookingsMetricsAbsent` | page | no healthy target or no request metrics for 10 min | [short](BookingsMetricsAbsent.md) |
+| `BookingsMetricsAbsent` | page | no healthy target or no booking request series for 10 min | [short](BookingsMetricsAbsent.md) |
+| `BookingsNoTraffic` | ticket | no booking requests for 45 min although there was traffic in the last day | [short](BookingsNoTraffic.md) |
 
 `page` = wake someone up. `ticket` = handle in working hours.
 
 Every runbook follows the same order: **what it means → how to check → what to do → how to verify**.
+
+Commands use `NS=tdb-prod` (production) or `NS=tdb-dev`; the Helm release is `tdb-bookings` in both.
+
+## Required scrape configuration
+
+Every rule selects `job="tdb-bookings"`. The Helm chart only sets the `prometheus.io/scrape`, `prometheus.io/port`
+and `prometheus.io/path` pod annotations; it does not set the job. Deploying these rules therefore **requires** the
+cluster Prometheus to label the bookings pods with that job, for example in a `kubernetes_sd_configs` scrape job
+with `role: pod`:
+
+```yaml
+relabel_configs:
+  # Keep only pods that opt in through the annotation.
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    action: keep
+    regex: "true"
+  # Set job="tdb-bookings" for pods labelled app.kubernetes.io/name=tdb-bookings.
+  - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+    regex: tdb-bookings
+    target_label: job
+    replacement: tdb-bookings
+```
+
+Without it the series carry the scrape job's own name, every rule matches nothing, and only `BookingsMetricsAbsent`
+(through `up{job="tdb-bookings"}` being absent) fires.
