@@ -1,0 +1,16 @@
+# Prometheus config for the local stack (compose.yaml). In Kubernetes the same rules file is loaded by
+# the cluster's Prometheus, which finds pods through the chart's prometheus.io/* annotations; the scrape
+# job there must also be named (or relabelled to) "tdb-bookings", because every rule selects on it.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Relative to this file, so the path resolves both in compose (/etc/prometheus/) and in CI (/w/).
+rule_files:
+  - rules/*.yaml
+
+scrape_configs:
+  - job_name: tdb-bookings
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8080"]

@@ -1,0 +1,44 @@
+# Local stack: the service plus a Prometheus that loads the SLO rules.
+#   docker compose up --build -d
+#   curl localhost:8080/bookings; open http://localhost:9090/alerts
+# Ports bind to 127.0.0.1 only.
+name: tdb-bookings
+
+services:
+  app:
+    build: .
+    image: tdb-bookings:local
+    environment:
+      PORT: "8080"
+      APP_ENV: local
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Same hardening as in Kubernetes. Health comes from the image's own HEALTHCHECK.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # The SLO is measured over 30 days; the 30d recording rule needs at least that much history.
+      - --storage.tsdb.retention.time=31d
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
