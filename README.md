@@ -104,3 +104,31 @@ Hardening: only the main-only `publish` job (in the `release` environment) can w
 pinned to a commit SHA, least-privilege `permissions:` per job, no `pull_request_target`, pip-audit from a hash lock,
 scanners installed as checksum-verified binaries (the `trivy-action` tags were hijacked in March 2026), Dependabot
 for actions, uv and base images. Details: [`docs/adr/0002-ci-pipeline.md`](docs/adr/0002-ci-pipeline.md).
+
+## P3: Helm chart
+
+[`charts/tdb-bookings/`](charts/tdb-bookings/README.md): Deployment, Service, ConfigMap, ServiceAccount (no API token),
+HPA, PodDisruptionBudget, NetworkPolicy, optional Ingress, a `helm test`, and a values schema that rejects bad input.
+
+| | dev (`values-dev.yaml`) | prod (`values-prod.yaml`) |
+|---|---|---|
+| Replicas | 1 | HPA 3 → 10 (CPU 70%, memory 80%) |
+| Disruptions | none | PDB `minAvailable: 2`, spread across zones and nodes |
+| Image | `main` tag | must be pinned: `image.digest` or `image.tag=sha-<commit>` (schema enforces) |
+
+- **No downtime on release:** `maxUnavailable: 0`, readiness gate on `/health`, `preStop` sleep so the endpoint is
+  removed before SIGTERM, `--atomic` rollback.
+- **Config vs secrets:** settings in a ConfigMap; `DATABASE_URL` only via `secretKeyRef` to an existing Secret (External
+  Secrets Operator from AWS Secrets Manager in real environments). The chart never renders a Secret.
+- **Pod security:** non-root 10001, read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp; runs
+  in a namespace enforcing the `restricted` Pod Security Standard.
+- **CI:** `.github/workflows/helm.yaml` runs `helm lint --strict`, `helm template` and `kubeconform -strict` for dev and
+  prod on every PR, plus checks that no Secret is rendered and that the prod guarantees hold.
+
+**Tested on a local kind cluster** (3 workers in 3 zones, prod values, steps in the chart README):
+
+| Scenario, under continuous in-cluster load (every 50 ms) | Result |
+|---|---|
+| Install, `helm test` | 3 pods, one per zone; test pod `Succeeded` |
+| Rolling upgrade (config change → new ReplicaSet) | `ok=5343 errors=0` |
+| Drain two of three workers at once | PDB blocked evictions below 2 available ("would violate the pod's disruption budget"), pods moved one at a time: `ok=1616 errors=0` |
