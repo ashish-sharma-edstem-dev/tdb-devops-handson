@@ -49,7 +49,8 @@ Set `NS=tdb-prod` (or `tdb-dev`; Helm release `tdb-bookings`) for the commands b
 - Caused by a release → revert or fix forward through a normal PR.
 - Latency creeping up → profile the slow route, check DB query plans / Performance Insights, review resource requests
   and HPA limits.
-- One bad pod or node → delete the pod or cordon the node.
+- One bad pod → delete it (the Deployment replaces it). One bad node → cordon **and drain** it with
+  `--pod-selector app.kubernetes.io/name=tdb-bookings` (cordon alone leaves the pods there); see the fast-burn runbook.
 - If it gets worse it becomes `BookingsErrorBudgetFastBurn`, which pages.
 
 ## Verify it is resolved

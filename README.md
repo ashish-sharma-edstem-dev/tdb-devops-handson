@@ -114,7 +114,7 @@ HPA, PodDisruptionBudget, NetworkPolicy, optional Ingress, a `helm test`, and a 
 |---|---|---|
 | Replicas | 1 | HPA 3 → 10 (CPU 70%, memory 80%) |
 | Disruptions | none | PDB `maxUnavailable: 1`, spread across zones and nodes |
-| Image | `main` tag | must be pinned: `image.digest` or `image.tag=sha-<commit>` (schema enforces) |
+| Image | `main` tag | must be pinned: `image.digest` or `image.tag=sha-<commit>` (the schema rejects no image; a template guard rejects a mutable tag such as `main`) |
 
 - **No downtime on release:** `maxUnavailable: 0`, readiness gate on `/health`, `preStop` sleep so the endpoint is
   removed before SIGTERM, `--atomic` rollback.

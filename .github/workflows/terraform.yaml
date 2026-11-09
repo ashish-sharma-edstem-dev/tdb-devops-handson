@@ -65,16 +65,22 @@ jobs:
       # -backend=false: no state, no credentials. -lockfile=readonly: fail if the committed lock file does not
       # already cover linux_amd64, instead of silently resolving a different provider build.
       - name: terraform init
-        run: terraform -chdir="${{ matrix.root }}" init -backend=false -lockfile=readonly
+        env:
+          ROOT: ${{ matrix.root }}
+        run: terraform -chdir="$ROOT" init -backend=false -lockfile=readonly
 
       - name: terraform validate
-        run: terraform -chdir="${{ matrix.root }}" validate -no-color
+        env:
+          ROOT: ${{ matrix.root }}
+        run: terraform -chdir="$ROOT" validate -no-color
 
       # Plan-time tests against a mocked AWS provider (tests/mocks): prove 3 AZs / NAT per AZ / Multi-AZ in prod,
       # no internet route to the DB tier, DB ingress from sg-app only. No AWS calls.
       - name: terraform test
         if: hashFiles(format('infra/terraform/{0}/tests/*.tftest.hcl', matrix.root)) != ''
-        run: terraform -chdir="${{ matrix.root }}" test -no-color
+        env:
+          ROOT: ${{ matrix.root }}
+        run: terraform -chdir="$ROOT" test -no-color
 
   tflint:
     name: tflint

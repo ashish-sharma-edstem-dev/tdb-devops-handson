@@ -59,7 +59,9 @@ The pod gets it through `env[].valueFrom.secretKeyRef`, so the value goes from t
 passes through Helm, a values file or git. The schema also refuses `DATABASE_URL` in `config.extraEnv`.
 
 **Real environments:** External Secrets Operator syncs the RDS credentials that AWS Secrets Manager generates (P4)
-into that Secret. ESO reads Secrets Manager with an IRSA role that can only `GetSecretValue` on that one secret.
+into that Secret. ESO reads Secrets Manager with an IRSA role that has only `secretsmanager:GetSecretValue` on that one
+secret (`db_master_secret_arn` output) and `kms:Decrypt` on the customer-managed key the secret is encrypted with
+(`db_kms_key_arn` output); without the second permission the read fails.
 Example (documentation only, not a chart template: the ExternalSecret belongs to the platform, and the chart must
 also work with any other way of creating the Secret):
 
@@ -80,13 +82,17 @@ spec:
     template:
       engineVersion: v2
       data:
-        DATABASE_URL: "postgresql://{{ .username }}:{{ .password | urlquery }}@<rds-endpoint>:5432/bookings?sslmode=require"
+        DATABASE_URL: "postgresql://{{ .username }}:{{ .password | urlquery }}@<rds-endpoint>:5432/bookings?sslmode=verify-full&sslrootcert=<path-to-rds-ca-bundle>"
   data:
     - secretKey: username
       remoteRef: { key: <rds-master-user-secret-arn>, property: username }
     - secretKey: password
       remoteRef: { key: <rds-master-user-secret-arn>, property: password }
 ```
+
+`sslmode=verify-full` checks the server certificate and hostname, so the client needs the RDS CA bundle
+(`rds-ca-rsa2048-g1`, see `infra/terraform/README.md`) at the `sslrootcert` path. The chart does not ship or mount it;
+provide it in the image or through a volume when the service starts using the database.
 
 A rotated password reaches running pods on the next rollout (env vars are read at start): run
 `kubectl rollout restart`, or add Stakater Reloader to restart on Secret change.
@@ -143,10 +149,11 @@ Resources: CPU and memory requests, a memory limit, **no CPU limit** by default.
 which shows up as tail latency even when the node has idle CPU; the request already guarantees the pod its share and
 is what the HPA measures against. Set `resources.limits.cpu` if a namespace policy requires one.
 
-NetworkPolicy (prod): ingress only to the `http` port, only from the VPC CIDR (ALB with IP targets), the `monitoring`
-namespace (Prometheus) and pods labelled `tdb-bookings/client: <fullname>` (the `helm test` pod). Egress only to
-cluster DNS and PostgreSQL 5432 inside the VPC. `10.0.0.0/16` in `values-prod.yaml` must equal the VPC CIDR in
-`infra/terraform`.
+NetworkPolicy (prod): ingress only to the `http` port, only from the prod public subnets `10.0.0.0/22` (the ALB, IP
+targets), the `monitoring` namespace (Prometheus) and pods labelled `tdb-bookings/client: <fullname>` (the `helm test`
+pod). Egress only to cluster DNS and PostgreSQL 5432 in the prod DB subnets `10.0.20.0/22`. Not the VPC CIDR: with the
+VPC CNI every pod has a VPC IP, so `10.0.0.0/16` would admit every pod in the cluster. Both ranges in
+`values-prod.yaml` must cover the public and DB subnet CIDRs in `infra/terraform/envs/prod`.
 
 ## Values
 
@@ -219,11 +226,14 @@ helm upgrade --install tdb-bookings charts/tdb-bookings -n tdb-prod \
   -f charts/tdb-bookings/values-prod.yaml \
   --set image.repository=tdb-bookings --set image.tag=local --set image.allowMutableTag=true \
   --wait --timeout 5m
+# Re-running this after a rebuild does NOT roll the pods: the tag `local` and the pod template are unchanged,
+# so Kubernetes keeps the old image. After every `docker build` + `kind load`, restart explicitly:
+kubectl -n tdb-prod rollout restart deployment/tdb-bookings
 kubectl -n tdb-prod rollout status deployment/tdb-bookings
 # The HPA (not the Deployment) sets the count to 3, one sync after install:
 kubectl -n tdb-prod wait deployment/tdb-bookings --for=jsonpath='{.status.availableReplicas}'=3 --timeout=2m
 kubectl -n tdb-prod get pods -o wide            # 3 pods, one per worker
-kubectl -n tdb-prod get hpa,pdb                 # HPA min 3 / max 10; PDB min available 2, allowed disruptions 1
+kubectl -n tdb-prod get hpa,pdb                 # HPA min 3 / max 10; PDB max unavailable 1, allowed disruptions 1
 helm -n tdb-prod test tdb-bookings
 ```
 

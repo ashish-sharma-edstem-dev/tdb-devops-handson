@@ -81,7 +81,7 @@ def data_flow() -> None:
         users = Users("Client")
         alb = ALB("ALB")
 
-        with Cluster("Kubernetes namespace tdb-bookings"):
+        with Cluster("Kubernetes namespace tdb-prod"):
             svc = Service("Service")
             pod = Pod("tdb-bookings pod\nFastAPI")
             k8s_secret = Secret("Secret\nDATABASE_URL")
@@ -114,18 +114,18 @@ def network_flow() -> None:
         internet = Users("Internet")
         igw = InternetGateway("IGW")
 
-        with Cluster("Public subnets · route 0.0.0.0/0 → IGW"):
-            alb = ALB("sg-alb\nin: 443 from 0.0.0.0/0")
+        with Cluster("Public subnets 10.0.0.0/22 · route 0.0.0.0/0 → IGW"):
+            alb = ALB("ALB + its SG\n(platform, outside P4)")
             nat = NATGateway("NAT GW (one per AZ)")
 
         with Cluster("Private app subnets · route 0.0.0.0/0 → NAT in same AZ"):
-            pod = Pod("sg-app\nin: 8080 from sg-alb only")
+            pod = Pod("pod (sg-app: egress only)\nNetworkPolicy in: 8080\nfrom 10.0.0.0/22 only")
 
         with Cluster("Private DB subnets · local routes only, no internet path"):
             rds = RDSPostgresqlInstance("sg-db\nin: 5432 from sg-app only\nforce_ssl=1, not public")
 
         internet >> Edge(label="443") >> igw >> alb
-        alb >> Edge(label="8080") >> pod
+        alb >> Edge(label="8080 (SG rule added by platform)") >> pod
         pod >> Edge(label="5432 TLS", color="darkgreen") >> rds
         pod >> Edge(label="egress (image pulls, AWS APIs)", style="dashed") >> nat >> igw
         internet >> Edge(label="blocked: no route, no SG rule", color="red", style="dashed") >> rds
@@ -144,12 +144,12 @@ def cicd_flow() -> None:
                 "helm lint · kubeconform\nterraform validate · tflint\ncheckov · promtool"
             )
 
-        with Cluster("On merge to main"):
-            publish = GithubActions("build → scan → push\nSBOM + provenance")
+        with Cluster("On push to main · release environment"):
+            publish = GithubActions("push by digest → re-scan digest\n→ attest → tag sha-<commit>")
             ghcr = Github("GHCR\n:sha-<commit> · :main")
 
         repo >> [quality, sec, image, iac]
-        repo >> Edge(label="merge") >> publish >> Edge(label="only if scan passes") >> ghcr
+        repo >> Edge(label="merge") >> publish >> Edge(label="tags only if re-scan passes") >> ghcr
 
 
 if __name__ == "__main__":

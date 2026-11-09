@@ -14,10 +14,10 @@ tdb-devops-handson/
 │   └── metrics.py                    #   Prometheus instrumentation             (P5)
 ├── tests/                            # pytest
 ├── Dockerfile, .dockerignore         # production image                          (P1)
-├── compose.yaml                      # local stack: app + postgres (+ prometheus) (P1, P5)
+├── compose.yaml                      # local stack: app + prometheus (no postgres) (P5)
 ├── .github/
 │   ├── pull_request_template.md      #                                           (setup)
-│   ├── dependabot.yml                # actions, uv, docker base image            (P2)
+│   ├── dependabot.yml                # actions, uv, docker base image, terraform, compose (P2)
 │   └── workflows/
 │       ├── ci.yaml                   # lint, types, tests, image build, scans, GHCR publish (P2)
 │       ├── helm.yaml                 # helm lint, template, kubeconform          (P3)
@@ -53,7 +53,7 @@ tdb-devops-handson/
 
 | Requirement | Design |
 |---|---|
-| Production-fit image | Multi-stage: `builder` installs the locked deps with `uv sync --frozen --no-dev` into `/app/.venv`; `runtime` copies only the venv and `app/`. No compilers, no uv, no tests in the final image. |
+| Production-fit image | Multi-stage: `builder` installs the locked deps with `uv sync --locked --no-dev` into `/app/.venv`; `runtime` copies only the venv and `app/`. No compilers, no uv, no tests in the final image. |
 | Small and safe | `python:3.13-slim` pinned **by digest**. Non-root UID/GID `10001`, no shell login, `PYTHONDONTWRITEBYTECODE`, works with a read-only root filesystem. Image size measured and stated in the PR. |
 | Same image everywhere | No env-specific build args. Everything from env vars at runtime. |
 | Reports health | `HEALTHCHECK` using the image's own Python (`urllib`), so no curl is added. Kubernetes uses its own probes (P3). |
@@ -68,11 +68,15 @@ source) vs Chainguard (near-zero CVEs, but only the `latest` tag is free, so it 
 Local proof: `docker build`, `docker run -e PORT=…`, `curl /health`, `docker inspect` (User, Health status, Size),
 container started with `--read-only --cap-drop ALL`.
 
+**Changed during delivery:** deps install with `uv sync --locked` (fails if `uv.lock` is stale) instead of `--frozen`
+(which would silently build from a stale lock). `compose.yaml` was not added in P1; it arrived in P5 as app +
+Prometheus only. The service runs on sample data, so there is no local postgres.
+
 ## P2: CI pipeline (`feature/p2-ci-pipeline`)
 
 `ci.yaml`, triggered on `pull_request` and `push` to `main`:
 
-1. **quality**: `uv sync --frozen`, ruff, mypy, pytest with coverage. uv cache enabled.
+1. **quality**: `uv sync --locked`, ruff, mypy, pytest with coverage. uv cache enabled.
 2. **security (code)**: `pip-audit` on the lock (dependency CVEs), gitleaks (committed secrets), hadolint (Dockerfile).
 3. **image**: buildx build with the GitHub Actions layer cache (`cache-from/to: type=gha`), load locally, then
    **Trivy** image scan:
@@ -86,6 +90,15 @@ container started with `--read-only --cap-drop ALL`.
 
 Hardening: least-privilege `permissions:` per job, actions pinned by commit SHA, `concurrency` cancels superseded PR
 runs. Dependabot keeps actions, Python deps and the base image digest current.
+
+**Changed during delivery:** publishing is not a step in the image job. The `image` job builds and gates every run
+(any CRITICAL, including unfixed, fails; CRITICAL/HIGH/MEDIUM SARIF to code scanning, non-blocking). A separate
+`publish` job runs only on pushes to `main`, needs `image`, and runs in the `release` environment (the only job with
+`packages: write`, `id-token: write`, `attestations: write`). It reuses the image if `sha-<commit>` already exists,
+otherwise pushes by digest (untagged), re-scans that exact digest with a fresh Trivy DB, attests build provenance
+(SBOM + provenance attached by buildx), then tags `sha-<commit>` (never overwritten) and moves `main` only if the
+commit is still the head of `main`. Install step is `uv sync --locked`. Dependabot later also covers the Terraform
+roots and the `prom/prometheus` pin in `compose.yaml`.
 
 ## P3: Helm chart (`feature/p3-helm-chart`)
 
@@ -104,6 +117,12 @@ CI (`helm.yaml`, every PR): `helm lint --strict` and `helm template` for dev and
 `kubeconform -strict -summary` against a pinned Kubernetes version.
 Local proof (optional item, will do): kind cluster, `helm upgrade --install` with prod values, rollout with zero failed
 requests during an upgrade, `kubectl drain` with the PDB holding.
+
+**Changed during delivery:** the PDB is `maxUnavailable: 1` and the chart fails to render if it is not lower than the
+minimum replica count. With `config.appEnv=prod` the chart refuses a mutable image: `image.digest`, or
+`image.tag=sha-<40 hex>` (unless `image.allowMutableTag` is set). The prod NetworkPolicy admits ingress only from the
+public subnets `10.0.0.0/22` (ALB) and the `monitoring` namespace, and allows egress 5432 only to the DB subnets
+`10.0.20.0/22`, not the whole VPC (with the VPC CNI every pod has a VPC IP).
 
 ## P4: Terraform for AWS (`feature/p4-terraform-aws`)
 
@@ -128,7 +147,8 @@ finishes in ≤ 1 s. Error budget = 0.1%.
 - **Metrics** (`prometheus_client`, `/metrics`): histogram `http_request_duration_seconds{method,route,status_class}`
   with a bucket exactly at `1.0`. Labelled by route *template* (not raw path) to keep cardinality bounded. One metric
   gives both parts of the SLI:
-  `good = rate(bucket{route="/bookings",le="1",status_class!="5xx"})`, `total = rate(count{route="/bookings"})`.
+  `good = rate(bucket{route=~"/bookings(/.*)?",le="1.0",status_class!="5xx"})`,
+  `total = rate(count{route=~"/bookings(/.*)?"})`. Buckets are inclusive, so "under 1 s" is measured as ≤ 1 s.
 - **Recording rules**: error ratio over 5m, 30m, 1h, 2h, 6h, 1d, 3d, 30d.
 - **Alerts** (multi-window, multi-burn-rate, Google SRE Workbook):
 
@@ -140,12 +160,21 @@ finishes in ≤ 1 s. Error budget = 0.1%.
   | `BookingsErrorBudgetSlowBurn` | 1× | 3d and 6h | 10% in 3 d | ticket |
   | `BookingsErrorBudgetLow` | n/a | 30d | > 75% of the month's budget gone | ticket |
   | `BookingsMetricsAbsent` | n/a | 10m | no data = no SLO alerts, so this is a page | page |
+  | `BookingsNoTraffic` | n/a | 15m rate = 0 for 30m, had traffic in the last 1d | 0/0 = NaN silences burn alerts | ticket |
 
 - Every alert has `runbook_url` → `docs/runbooks/<alert>.md`. Full runbook written for `BookingsErrorBudgetFastBurn`
   (what it means, how to check, what to do, escalation); short stubs for the others.
 - CI (`monitoring.yaml`): `promtool check rules` and `promtool test rules` (unit tests that feed synthetic series and
   assert each alert fires / stays quiet), run from the pinned `prom/prometheus` image.
 - Local proof: compose stack with app + Prometheus, load generated, rules loaded and visible in Prometheus.
+
+**Changed during delivery:** the SLI covers every `/bookings` route (`route=~"/bookings(/.*)?"`) and reads the
+`le="1.0"` bucket (≤ 1 s). The good-request numerator is zero-filled so a total outage (all 5xx) still yields a ratio.
+`BookingsErrorBudgetFastBurn` pages only with at least 100 requests in the last hour (below that, the ticket alerts
+catch it); `for:` is 2m (fast), 15m (slow), 1h (budget low), 10m (absent), 30m (no traffic). `BookingsNoTraffic`
+(ticket) was added because no booking traffic makes every ratio NaN while the series still exist, so neither the burn
+alerts nor `BookingsMetricsAbsent` would fire. Every alert has a runbook. `compose.yaml` (app + Prometheus, no
+postgres) belongs to P5.
 
 ## Working method (agents)
 

@@ -35,9 +35,9 @@ promotes the standby and the DNS endpoint follows it (typically 60–120 s).
 
 | From | To | Port | Allowed by |
 |---|---|---|---|
-| Internet | ALB | 443 | `sg-alb` ingress 0.0.0.0/0, public subnets route to IGW |
-| ALB | pods | 8080 | `sg-app` ingress from `sg-alb` only |
-| pods | RDS | 5432 (TLS required) | `sg-db` ingress from `sg-app` only; `rds.force_ssl = 1` |
+| Internet | ALB | 443 | ALB security group (platform, outside P4: created by the AWS Load Balancer Controller); public subnets route to IGW |
+| ALB | pods | 8080 | Pod side: the chart's prod NetworkPolicy admits `http` only from the public subnets `10.0.0.0/22` (plus the `monitoring` namespace). AWS side: the ALB→workload SG rule is added by the platform that owns the ALB; Terraform's `sg-app` has egress rules only (443 out, 5432 to the DB subnets) |
+| pods | RDS | 5432 (TLS required) | `sg-db` ingress from `sg-app` only; NetworkPolicy egress 5432 only to the DB subnets `10.0.20.0/22`; `rds.force_ssl = 1` |
 | pods | Internet (image pulls, AWS APIs) | 443 | private-app route `0.0.0.0/0 → NAT` in the same AZ |
 | Internet | RDS | any | **Blocked.** DB subnets have no internet route, `publicly_accessible = false`, no SG rule |
 | RDS | Internet | any | **Blocked.** No route out of the DB subnets |
@@ -102,6 +102,8 @@ flowchart LR
 
 ![CI/CD flow](cicd-flow.png)
 
-Every PR runs all checks. On merge to `main`, the image is built, scanned, and only pushed to GHCR if Trivy finds no
-CRITICAL vulnerability. Tag `sha-<full commit sha>` plus the OCI `revision` label and a signed build-provenance
-attestation tie every image to the exact commit.
+Every PR runs all checks, including an image build and a Trivy gate (any CRITICAL fails). On a push to `main`, a
+separate `publish` job in the `release` environment pushes the image to GHCR by digest (untagged), re-scans that exact
+digest with Trivy, attests build provenance, then tags it `sha-<full commit sha>` (never overwritten) and moves `main`
+only if the commit is still the head of `main`. The tag, the OCI `revision` label and the signed attestation tie every
+image to the exact commit.

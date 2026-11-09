@@ -17,6 +17,7 @@ infra/terraform/
 │   └── postgres/            RDS PostgreSQL, sg-db, subnet group, parameter group, KMS key, log groups
 ├── envs/
 │   ├── dev/                 root module: 2 AZs, 1 NAT, single-AZ db.t4g.micro         state key tdb-bookings/dev/…
+│   │   └── tests/           plan-time tests (mocked AWS): dev.tftest.hcl
 │   └── prod/                root module: 3 AZs, NAT per AZ, Multi-AZ db.m7g.large     state key tdb-bookings/prod/…
 │       └── tests/           plan-time tests (mocked AWS): prod.tftest.hcl, guards.tftest.hcl
 └── tests/mocks/             shared mock data for `terraform test` (no credentials, no API calls)
