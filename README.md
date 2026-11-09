@@ -71,9 +71,9 @@ curl -s localhost:9000/health        # {"status":"ok"}
 docker inspect --format '{{.Config.User}} {{.State.Health.Status}}' <container>   # 10001:10001 healthy
 ```
 
-- Multi-stage build on `python:3.13-slim`, pinned by digest. Final image: **228 MB uncompressed / 49 MB compressed**
+- Multi-stage build on `python:3.13-slim`, pinned by digest. Final image: **230 MB uncompressed / ~49 MB compressed**
   (202 MB is the base; app dependencies 19.5 MB).
-- Runs as UID/GID `10001`. pip, uv and compilers are not in the final image.
+- Runs as UID/GID `10001`. pip, uv, compilers and setuid bits are not in the final image.
 - `HEALTHCHECK` uses the image's own Python, so no curl is added.
 - The same image runs everywhere: `PORT`, `APP_ENV`, `DATABASE_URL`, … come from the environment at run time.
 - Why this base image: [`docs/adr/0001-container-base-image.md`](docs/adr/0001-container-base-image.md).
