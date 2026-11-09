@@ -8,6 +8,9 @@ One histogram gives both halves of the SLI:
 so latency and errors are always read from the same observation and can never drift apart. A
 separate ``http_requests_total`` counter would duplicate ``_count`` exactly, so it is not exported.
 
+Prometheus buckets are inclusive, so "under 1 s" is measured as ``<= 1 s``: a request of exactly
+1.000 s counts as good (docs/adr/0005-slo-alerting.md).
+
 Assumes one uvicorn worker per container (scaling is done with pod replicas, not workers), so the
 ``prometheus_client`` multiprocess mode is not needed.
 """
