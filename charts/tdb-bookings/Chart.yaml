@@ -1,0 +1,19 @@
+apiVersion: v2
+name: tdb-bookings
+description: Bookings API (FastAPI) for the TDB DevOps hands-on exercise.
+type: application
+# Chart version: bump on every change to this directory (SemVer).
+version: 0.1.0
+# Version of the service the chart was written for. The image is selected by image.digest / image.tag.
+appVersion: "0.1.0"
+# PodDisruptionBudget unhealthyPodEvictionPolicy and topology spread nodeTaintsPolicy are on by default from 1.27.
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson
+sources:
+  - https://github.com/ashish-sharma-edstem-dev/tdb-devops-handson
+maintainers:
+  - name: Ashish Sharma
+    url: https://github.com/ashish-sharma-edstem-dev
+keywords:
+  - fastapi
+  - bookings

@@ -1,0 +1,110 @@
+name: helm
+
+# Validates the Helm chart on every PR into main and every push to main: lint with the values schema, render both
+# environments and check the output against the Kubernetes API schemas. No cluster is needed.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CHART: charts/tdb-bookings
+  HELM_VERSION: v3.22.1
+  KUBECONFORM_VERSION: v0.8.0
+  # sha256 of kubeconform-linux-amd64.tar.gz for KUBECONFORM_VERSION (from the release's CHECKSUMS file).
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  # Kubernetes version the manifests are validated against (EKS target).
+  KUBERNETES_VERSION: 1.33.0
+
+jobs:
+  validate:
+    name: Helm lint and validate (dev, prod)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform (checksum verified)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -fsSL --retry 3 -o "${tmp}/kubeconform-linux-amd64.tar.gz" "${base}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSL --retry 3 -o "${tmp}/CHECKSUMS" "${base}/CHECKSUMS"
+          # The pinned hash must match both the download and the release's own CHECKSUMS file.
+          grep -qx "${KUBECONFORM_SHA256}  kubeconform-linux-amd64.tar.gz" "${tmp}/CHECKSUMS"
+          echo "${KUBECONFORM_SHA256}  ${tmp}/kubeconform-linux-amd64.tar.gz" | sha256sum --check --strict
+          tar -xzf "${tmp}/kubeconform-linux-amd64.tar.gz" -C "${tmp}" kubeconform
+          mkdir -p "${HOME}/.local/bin"
+          install -m 0755 "${tmp}/kubeconform" "${HOME}/.local/bin/kubeconform"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          helm version --short
+          "${HOME}/.local/bin/kubeconform" -v
+
+      - name: Lint, render and validate
+        env:
+          # Prod values name no image on purpose (every prod release must pass one). CI passes the tag the image
+          # pipeline publishes for this commit. Dev is validated exactly as committed (it follows `main`).
+          PROD_IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for env in dev prod; do
+            echo "::group::${env}"
+            image_set=""
+            if [ "${env}" = prod ]; then image_set="image.tag=${PROD_IMAGE_TAG}"; fi
+            helm lint --strict "${CHART}" -f "${CHART}/values-${env}.yaml" ${image_set:+--set "${image_set}"}
+            helm template "tdb-bookings" "${CHART}" --namespace "tdb-${env}" \
+              -f "${CHART}/values-${env}.yaml" ${image_set:+--set "${image_set}"} \
+              --kube-version "${KUBERNETES_VERSION}" > "rendered-${env}.yaml"
+            kubeconform -strict -summary -kubernetes-version "${KUBERNETES_VERSION}" \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              "rendered-${env}.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Check chart guarantees
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          # Secrets: the chart never renders a Secret, and DATABASE_URL only ever comes from a secretKeyRef.
+          for env in dev prod; do
+            ! grep -qE '^kind: Secret$' "rendered-${env}.yaml" || fail "${env}: chart rendered a Secret"
+          done
+          grep -A3 -- '- name: DATABASE_URL' rendered-prod.yaml | grep -q 'secretKeyRef:' \
+            || fail "prod: DATABASE_URL is not read from a secretKeyRef"
+          ! grep -q 'DATABASE_URL' rendered-dev.yaml || fail "dev: DATABASE_URL referenced without existingSecret"
+
+          # Prod availability: HPA floor 3, PDB maxUnavailable 1, no surge-less rollout, spread across zones and nodes.
+          grep -q '^  minReplicas: 3$' rendered-prod.yaml || fail "prod: HPA minReplicas is not 3"
+          grep -q '^  maxUnavailable: 1$' rendered-prod.yaml || fail "prod: PDB maxUnavailable is not 1"
+          grep -q 'maxUnavailable: 0$' rendered-prod.yaml || fail "prod: rollout maxUnavailable is not 0"
+          grep -q 'topologyKey: topology.kubernetes.io/zone' rendered-prod.yaml || fail "prod: no zone spread"
+          grep -q 'topologyKey: kubernetes.io/hostname' rendered-prod.yaml || fail "prod: no node spread"
+
+          # Schema: a release without an image must be rejected before it reaches the cluster.
+          if helm lint --strict "${CHART}" -f "${CHART}/values-prod.yaml" > lint-no-image.log 2>&1; then
+            fail "prod lint passed without image.tag/image.digest; the schema is not enforced"
+          fi
+          grep -q 'image' lint-no-image.log || fail "unexpected lint failure: $(cat lint-no-image.log)"
+          echo "All chart guarantees hold."

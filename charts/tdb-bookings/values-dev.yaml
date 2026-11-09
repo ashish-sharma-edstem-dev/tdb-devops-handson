@@ -1,0 +1,42 @@
+# Dev: one small pod, no autoscaling, no PDB (a PDB on one replica would block every node drain).
+# Usage:
+#   helm upgrade --install tdb-bookings charts/tdb-bookings -n tdb-dev -f charts/tdb-bookings/values-dev.yaml
+
+replicaCount: 1
+
+image:
+  # Dev follows main. The tag moves, so always pull; prod pins an immutable sha-/digest instead.
+  tag: main
+  pullPolicy: Always
+
+config:
+  appEnv: dev
+  logLevel: debug
+
+# Dev runs on the service's sample data. To use a database, create the Secret and set its name:
+#   --set secret.existingSecret=tdb-bookings-db
+secret:
+  existingSecret: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    memory: 192Mi
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+topologySpread:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+# Faster restarts and rollouts in dev.
+minReadySeconds: 0
+revisionHistoryLimit: 3
