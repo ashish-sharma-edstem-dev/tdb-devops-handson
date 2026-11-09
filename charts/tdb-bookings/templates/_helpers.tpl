@@ -114,10 +114,14 @@ Cross-field checks JSON Schema draft-07 cannot express. Rendered from the Deploy
 {{- if and .Values.autoscaling.enabled (lt (int .Values.autoscaling.targetCPUUtilizationPercentage) 1) }}
 {{- fail "autoscaling.targetCPUUtilizationPercentage must be set when autoscaling is enabled" }}
 {{- end }}
+{{- $img := .Values.image }}
+{{- if and (eq .Values.config.appEnv "prod") (not $img.digest) (not $img.allowMutableTag) (not (regexMatch "^sha-[0-9a-f]{40}$" $img.tag)) }}
+{{- fail (printf "config.appEnv=prod needs an immutable image: image.digest, or image.tag=sha-<40-hex commit> (got tag %q)" $img.tag) }}
+{{- end }}
 {{- $pdb := .Values.podDisruptionBudget }}
-{{- if and $pdb.enabled (not (kindIs "string" $pdb.minAvailable)) }}
-{{- if ge (int $pdb.minAvailable) (int (include "tdb-bookings.minReplicas" .)) }}
-{{- fail (printf "podDisruptionBudget.minAvailable (%d) must be lower than the minimum replica count (%s), otherwise no pod can ever be evicted and node drains hang" (int $pdb.minAvailable) (include "tdb-bookings.minReplicas" .)) }}
+{{- if $pdb.enabled }}
+{{- if ge (int $pdb.maxUnavailable) (int (include "tdb-bookings.minReplicas" .)) }}
+{{- fail (printf "podDisruptionBudget.maxUnavailable (%d) must be lower than the minimum replica count (%s), otherwise a drain may take every pod" (int $pdb.maxUnavailable) (include "tdb-bookings.minReplicas" .)) }}
 {{- end }}
 {{- end }}
 {{- end }}

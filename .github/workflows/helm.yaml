@@ -95,9 +95,9 @@ jobs:
             || fail "prod: DATABASE_URL is not read from a secretKeyRef"
           ! grep -q 'DATABASE_URL' rendered-dev.yaml || fail "dev: DATABASE_URL referenced without existingSecret"
 
-          # Prod availability: HPA floor 3, PDB minAvailable 2, no surge-less rollout, spread across zones and nodes.
+          # Prod availability: HPA floor 3, PDB maxUnavailable 1, no surge-less rollout, spread across zones and nodes.
           grep -q '^  minReplicas: 3$' rendered-prod.yaml || fail "prod: HPA minReplicas is not 3"
-          grep -q '^  minAvailable: 2$' rendered-prod.yaml || fail "prod: PDB minAvailable is not 2"
+          grep -q '^  maxUnavailable: 1$' rendered-prod.yaml || fail "prod: PDB maxUnavailable is not 1"
           grep -q 'maxUnavailable: 0$' rendered-prod.yaml || fail "prod: rollout maxUnavailable is not 0"
           grep -q 'topologyKey: topology.kubernetes.io/zone' rendered-prod.yaml || fail "prod: no zone spread"
           grep -q 'topologyKey: kubernetes.io/hostname' rendered-prod.yaml || fail "prod: no node spread"

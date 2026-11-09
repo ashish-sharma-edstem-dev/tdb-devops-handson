@@ -74,7 +74,8 @@
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string", "pattern": "^([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$" },
         "digest": { "type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$" },
-        "pullPolicy": { "type": "string", "enum": ["IfNotPresent", "Always", "Never"] }
+        "pullPolicy": { "type": "string", "enum": ["IfNotPresent", "Always", "Never"] },
+        "allowMutableTag": { "type": "boolean" }
       },
       "anyOf": [
         { "properties": { "tag": { "minLength": 1 } } },
@@ -112,7 +113,7 @@
           "type": "object",
           "propertyNames": {
             "pattern": "^[A-Z_][A-Z0-9_]*$",
-            "not": { "enum": ["DATABASE_URL", "PORT", "APP_ENV", "LOG_LEVEL"] }
+            "not": { "enum": ["DATABASE_URL", "PORT", "APP_ENV", "LOG_LEVEL", "HOST"] }
           },
           "additionalProperties": { "type": "string" }
         }
@@ -206,10 +207,10 @@
     "podDisruptionBudget": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "minAvailable"],
+      "required": ["enabled", "maxUnavailable"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "minAvailable": { "$ref": "#/definitions/intOrPercent" },
+        "maxUnavailable": { "type": "integer", "minimum": 1 },
         "unhealthyPodEvictionPolicy": { "type": "string", "enum": ["AlwaysAllow", "IfHealthyBudget"] }
       }
     },

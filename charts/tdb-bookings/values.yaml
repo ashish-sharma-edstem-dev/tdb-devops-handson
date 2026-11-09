@@ -23,6 +23,9 @@ image:
   digest: ""
   # -- Pull policy. IfNotPresent is correct for immutable tags/digests.
   pullPolicy: IfNotPresent
+  # -- With `config.appEnv: prod`, only a digest or a `sha-<40 hex>` tag is accepted. Set true only for local
+  # testing (e.g. kind with `tdb-bookings:local`), never in a real environment.
+  allowMutableTag: false
 
 # -- Secrets for pulling from a private registry, e.g. `[{name: ghcr-pull}]`. The Secrets are created out of band.
 imagePullSecrets: []
@@ -156,8 +159,9 @@ autoscaling:
 podDisruptionBudget:
   # -- Create a PodDisruptionBudget. Keep off for single-replica installs: a PDB there would block node drains.
   enabled: false
-  # -- Pods that must stay available during voluntary disruptions (node drain, cluster upgrade).
-  minAvailable: 1
+  # -- Pods that may be down at once during voluntary disruptions (node drain, cluster upgrade). A fixed
+  # maxUnavailable (not minAvailable) keeps "one pod at a time" true at any replica count the HPA picks.
+  maxUnavailable: 1
   # -- Evict pods that are not ready even when the budget is exhausted, so a crash-looping pod never blocks a drain.
   unhealthyPodEvictionPolicy: AlwaysAllow
 

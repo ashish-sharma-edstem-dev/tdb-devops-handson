@@ -37,7 +37,7 @@ autoscaling:
 
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2
+  maxUnavailable: 1
   unhealthyPodEvictionPolicy: AlwaysAllow
 
 topologySpread:
@@ -63,10 +63,11 @@ networkPolicy:
   enabled: true
   allowClientLabel: true
   ingressFrom:
-    # ALB (aws-load-balancer-controller, IP targets) reaches pods from inside the VPC.
-    # Must equal the VPC CIDR in infra/terraform.
+    # ALB (aws-load-balancer-controller, IP targets) sends from its nodes in the public subnets.
+    # 10.0.0.0/22 = the prod public subnets 10.0.0-2.0/24 in infra/terraform. Not the whole VPC: with the
+    # VPC CNI every pod has a VPC IP, so the VPC CIDR would admit every pod in the cluster.
     - ipBlock:
-        cidr: 10.0.0.0/16
+        cidr: 10.0.0.0/22
     # Prometheus scrapes /metrics on the same port.
     - namespaceSelector:
         matchLabels:
@@ -74,10 +75,10 @@ networkPolicy:
   egress:
     enabled: true
     rules:
-      # PostgreSQL (RDS) inside the VPC. DNS is always allowed by the chart.
+      # PostgreSQL (RDS) in the prod DB subnets 10.0.20-22.0/24 (infra/terraform). DNS is always allowed.
       - to:
           - ipBlock:
-              cidr: 10.0.0.0/16
+              cidr: 10.0.20.0/22
         ports:
           - port: 5432
             protocol: TCP

@@ -2,7 +2,7 @@
 
 Image:     {{ include "tdb-bookings.image" . }}
 Replicas:  {{ if .Values.autoscaling.enabled }}HPA {{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} (CPU {{ .Values.autoscaling.targetCPUUtilizationPercentage }}%){{ else }}{{ .Values.replicaCount }} (no autoscaling){{ end }}
-PDB:       {{ if .Values.podDisruptionBudget.enabled }}minAvailable {{ .Values.podDisruptionBudget.minAvailable }}{{ else }}none{{ end }}
+PDB:       {{ if .Values.podDisruptionBudget.enabled }}maxUnavailable {{ .Values.podDisruptionBudget.maxUnavailable }}{{ else }}none{{ end }}
 Database:  {{ if .Values.secret.existingSecret }}DATABASE_URL from Secret {{ .Values.secret.existingSecret }} (key {{ .Values.secret.databaseUrlKey }}){{ else }}not configured (no Secret referenced){{ end }}
 
 Watch the rollout:
