@@ -91,13 +91,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
-        with:
-          tflint_version: ${{ env.TFLINT_VERSION }}
+      # Installed like the other scanners (authenticated download + pinned SHA-256) instead of
+      # setup-tflint, whose binary download is anonymous and fails when GitHub throttles anonymous traffic.
+      - name: Install tflint (pinned, checksum-verified)
+        env:
+          GH_TOKEN: ${{ github.token }}
           # SHA-256 of tflint_linux_amd64.zip from the v0.65.0 release checksums.txt: a re-tagged binary fails here.
-          checksums: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
-          cache: true
-          tflint_config_path: infra/terraform/.tflint.hcl
+          TFLINT_SHA256: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          gh release download "${TFLINT_VERSION}" -R terraform-linters/tflint \
+            -p tflint_linux_amd64.zip -O "$RUNNER_TEMP/tflint.zip"
+          echo "${TFLINT_SHA256}  $RUNNER_TEMP/tflint.zip" | sha256sum --check --strict
+          unzip -q -o "$RUNNER_TEMP/tflint.zip" tflint -d "$bin"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/tflint" --version
 
       # The token only raises the GitHub API rate limit for downloading the pinned AWS ruleset.
       - name: tflint --init
